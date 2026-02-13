@@ -1,7 +1,7 @@
 pub mod cleaner;
-pub mod terraform;
 pub mod diff;
+pub mod terraform;
 
 pub use cleaner::*;
-pub use terraform::*;
 pub use diff::*;
+pub use terraform::*;

@@ -1,3 +1,3 @@
-pub mod parser;
-pub mod formatter; 
+pub mod formatter;
 pub mod models;
+pub mod parser;

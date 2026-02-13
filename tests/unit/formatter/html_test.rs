@@ -1,16 +1,16 @@
+use crate::common::test_data::*;
 use tfdiff::formatter::html::*;
 use tfdiff::models::*;
-use crate::common::test_data::*;
 
 #[cfg(test)]
 mod html_formatter_tests {
     use super::*;
-    
+
     #[test]
     fn test_format_html_output_basic() {
         let plan = sample_terraform_plan();
         let output = format_html_output(&plan);
-        
+
         assert!(output.contains("<!DOCTYPE html>"));
         assert!(output.contains("<html lang=\"en\">"));
         assert!(output.contains("Terraform Plan Analysis"));
@@ -20,16 +20,16 @@ mod html_formatter_tests {
         assert!(output.contains(">1<"));
         assert!(output.contains("to change"));
     }
-    
+
     #[test]
     fn test_format_html_output_apply_mode() {
         let mut plan = sample_terraform_plan();
         plan.mode = PlanMode::Apply;
-        
+
         let output = format_html_output(&plan);
         assert!(output.contains("Terraform Plan Analysis"));
     }
-    
+
     #[test]
     fn test_format_html_output_empty_plan() {
         let plan = TerraformPlan {
@@ -40,7 +40,7 @@ mod html_formatter_tests {
             warnings: Vec::new(),
             metadata: Metadata::default(),
         };
-        
+
         let output = format_html_output(&plan);
         assert!(output.contains("<!DOCTYPE html>"));
         assert!(output.contains("Terraform Plan Analysis"));
@@ -49,7 +49,7 @@ mod html_formatter_tests {
         assert!(!output.contains("to change"));
         assert!(!output.contains("to destroy"));
     }
-    
+
     #[test]
     fn test_format_html_output_with_destroy() {
         let plan = TerraformPlan {
@@ -60,15 +60,12 @@ mod html_formatter_tests {
                 destroy: 2,
                 read: 0,
             },
-            resources: vec![
-                sample_create_resource(),
-                sample_destroy_resource(),
-            ],
+            resources: vec![sample_create_resource(), sample_destroy_resource()],
             data_sources: Vec::new(),
             warnings: Vec::new(),
             metadata: Metadata::default(),
         };
-        
+
         let output = format_html_output(&plan);
         assert!(output.contains(">1<"));
         assert!(output.contains("to add"));
@@ -77,7 +74,7 @@ mod html_formatter_tests {
         assert!(output.contains("aws_s3_bucket.test"));
         assert!(output.contains("aws_instance.legacy"));
     }
-    
+
     #[test]
     fn test_format_html_output_with_read_resources() {
         let plan = TerraformPlan {
@@ -93,17 +90,17 @@ mod html_formatter_tests {
             warnings: Vec::new(),
             metadata: Metadata::default(),
         };
-        
+
         let output = format_html_output(&plan);
         assert!(output.contains(">3<"));
         assert!(output.contains("to read"));
     }
-    
+
     #[test]
     fn test_format_html_output_interactive_features() {
         let plan = sample_terraform_plan();
         let output = format_html_output(&plan);
-        
+
         // Check for interactive JavaScript features
         // JavaScript is no longer included in the new format
         assert!(output.contains("action-badge"));
@@ -111,40 +108,40 @@ mod html_formatter_tests {
         assert!(output.contains("resource-section"));
         assert!(output.contains("diff-container"));
         assert!(output.contains("diff-side"));
-        
+
         // Check for resource sections and action badges
         assert!(output.contains("resource-section"));
         assert!(output.contains("action-create"));
         assert!(output.contains("action-update"));
     }
-    
+
     #[test]
     fn test_format_html_output_responsive_design() {
         let plan = sample_terraform_plan();
         let output = format_html_output(&plan);
-        
+
         // Check for responsive CSS
         assert!(output.contains("@media (max-width: 768px)"));
         assert!(output.contains("viewport"));
         assert!(output.contains("grid-template-columns"));
     }
-    
+
     #[test]
     fn test_format_html_output_accessibility() {
         let plan = sample_terraform_plan();
         let output = format_html_output(&plan);
-        
+
         // Check for accessibility features
         assert!(output.contains("lang=\"en\""));
         assert!(output.contains("alt=") || output.contains("aria-") || !output.contains("<img"));
         // No images used, so alt text not required, but language is set
     }
-    
+
     #[test]
     fn test_format_html_output_styling() {
         let plan = sample_terraform_plan();
         let output = format_html_output(&plan);
-        
+
         // Check for modern styling features
         assert!(output.contains("linear-gradient"));
         assert!(output.contains("border-radius"));
@@ -152,12 +149,12 @@ mod html_formatter_tests {
         assert!(output.contains("transition"));
         assert!(output.contains("-apple-system"));
     }
-    
+
     #[test]
     fn test_format_html_output_resources_with_attributes() {
         let plan = sample_terraform_plan();
         let output = format_html_output(&plan);
-        
+
         // Check that resource attributes are properly displayed
         assert!(output.contains("attribute"));
         assert!(output.contains("bucket"));

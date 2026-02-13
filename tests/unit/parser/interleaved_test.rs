@@ -1,4 +1,4 @@
-use tfdiff::parser::{parse_terraform_output, diff::parse_resource_changes};
+use tfdiff::parser::{diff::parse_resource_changes, parse_terraform_output};
 use tfdiff::{ActionType, PlanMode};
 
 #[test]
@@ -46,30 +46,57 @@ server) will be created
                            Plan: 1 to add, 1 to change, 0 to destroy."#;
 
     let result = parse_terraform_output(input);
-    assert!(result.is_ok(), "Failed to parse interleaved output: {:?}", result);
-    
+    assert!(
+        result.is_ok(),
+        "Failed to parse interleaved output: {:?}",
+        result
+    );
+
     let plan = result.unwrap();
     assert_eq!(plan.mode, PlanMode::Plan);
     assert_eq!(plan.summary.add, 1);
     assert_eq!(plan.summary.change, 1);
     assert_eq!(plan.summary.destroy, 0);
-    
+
     // Check that we found both resources
     assert_eq!(plan.resources.len(), 2, "Should have found 2 resources");
-    
+
     // Check the first resource (create)
-    let create_resource = plan.resources.iter()
+    let create_resource = plan
+        .resources
+        .iter()
         .find(|r| r.type_name == "aws_eks_addon")
         .expect("Should find aws_eks_addon resource");
     assert_eq!(create_resource.action, ActionType::Create);
-    assert!(create_resource.name.contains("scout-use1-apps-eks-cluster_scout-use1-apps-metrics-server"));
-    
+    assert!(create_resource
+        .name
+        .contains("scout-use1-apps-eks-cluster_scout-use1-apps-metrics-server"));
+
     // Check the second resource (update)
-    let update_resource = plan.resources.iter()
+    let update_resource = plan
+        .resources
+        .iter()
         .find(|r| r.type_name == "aws_iam_policy_attachment")
         .expect("Should find aws_iam_policy_attachment resource");
     assert_eq!(update_resource.action, ActionType::Update);
-    assert!(update_resource.name.contains("p-zinc-backup_CHS3p-zinc-backupSinkUserPA"));
+    assert!(update_resource
+        .name
+        .contains("p-zinc-backup_CHS3p-zinc-backupSinkUserPA"));
+
+    // Verify that the roles array change is actually parsed
+    assert!(
+        !update_resource.changes.is_empty(),
+        "Should have parsed the roles array change for aws_iam_policy_attachment"
+    );
+    let roles_change = update_resource
+        .changes
+        .iter()
+        .find(|c| c.path.contains(&"roles".to_string()))
+        .expect("Should have a change for 'roles'");
+    assert!(
+        roles_change.before.is_some(),
+        "roles change should have a before value"
+    );
 }
 
 #[test]
@@ -85,22 +112,34 @@ fn test_parse_complex_resource_names() {
         ~ roles = []
     }
     "#;
-    
+
     let lines: Vec<&str> = input.lines().collect();
     let resources = parse_resource_changes(&lines);
-    
-    assert_eq!(resources.len(), 2, "Should parse both resources with complex names");
-    
+
+    assert_eq!(
+        resources.len(),
+        2,
+        "Should parse both resources with complex names"
+    );
+
     // Check resource with hash suffix
-    let addon = resources.iter()
+    let addon = resources
+        .iter()
         .find(|r| r.type_name == "aws_eks_addon")
         .expect("Should find aws_eks_addon");
-    assert!(addon.name.contains("F073EB1D"), "Should include hash suffix in name");
-    
-    let attachment = resources.iter()
+    assert!(
+        addon.name.contains("F073EB1D"),
+        "Should include hash suffix in name"
+    );
+
+    let attachment = resources
+        .iter()
         .find(|r| r.type_name == "aws_iam_policy_attachment")
         .expect("Should find aws_iam_policy_attachment");
-    assert!(attachment.name.contains("5F158766"), "Should include hash suffix in name");
+    assert!(
+        attachment.name.contains("5F158766"),
+        "Should include hash suffix in name"
+    );
 }
 
 #[test]
@@ -116,18 +155,24 @@ fn test_parse_with_parenthetical_info() {
         ~ roles = []
     }
     "#;
-    
+
     let lines: Vec<&str> = input.lines().collect();
     let resources = parse_resource_changes(&lines);
-    
-    assert_eq!(resources.len(), 2, "Should parse resources with parenthetical info");
-    
-    let addon = resources.iter()
+
+    assert_eq!(
+        resources.len(),
+        2,
+        "Should parse resources with parenthetical info"
+    );
+
+    let addon = resources
+        .iter()
         .find(|r| r.type_name == "aws_eks_addon")
         .expect("Should find aws_eks_addon");
     assert_eq!(addon.action, ActionType::Create);
-    
-    let attachment = resources.iter()
+
+    let attachment = resources
+        .iter()
         .find(|r| r.type_name == "aws_iam_policy_attachment")
         .expect("Should find aws_iam_policy_attachment");
     assert_eq!(attachment.action, ActionType::Update);

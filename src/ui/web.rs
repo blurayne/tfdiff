@@ -1,11 +1,11 @@
-use crate::{TerraformPlan, Result};
+use crate::{Result, TerraformPlan};
 
 pub async fn start_web_server(_plan: TerraformPlan, port: u16) -> Result<()> {
     println!("🌐 Starting web server on port {}", port);
-    
+
     // TODO: Implement full web server with axum
     // This is a placeholder implementation
-    
+
     Ok(())
 }
 

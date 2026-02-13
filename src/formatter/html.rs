@@ -1,10 +1,10 @@
-use crate::{TerraformPlan, ActionType};
-use serde_json::{Value, json};
+use crate::{ActionType, TerraformPlan};
 use chrono::Local;
+use serde_json::{json, Value};
 
 pub fn format_html_output(plan: &TerraformPlan) -> String {
     let mut html = String::new();
-    
+
     // HTML header - exactly matching the sample
     html.push_str(r#"<!DOCTYPE html>
 <html lang="en">
@@ -407,73 +407,90 @@ pub fn format_html_output(plan: &TerraformPlan) -> String {
 </head>
 <body>
     <div class="container">"#);
-    
+
     // Header with shimmer effect
     let timestamp = Local::now().format("%B %d, %Y").to_string();
-    html.push_str(&format!(r#"
+    html.push_str(&format!(
+        r#"
         <div class="header">
             <h1>Terraform Plan Analysis</h1>
             <div class="subtitle">Infrastructure changes</div>
             <div class="timestamp">Generated on {}</div>
-        </div>"#, timestamp));
-    
+        </div>"#,
+        timestamp
+    ));
+
     // Summary Card
-    html.push_str(r#"
+    html.push_str(
+        r#"
         <div class="summary-card">
             <div class="summary-title">
                 <span>📊</span>
                 <span>Plan Summary</span>
             </div>
-            <div class="summary-grid">"#);
-    
+            <div class="summary-grid">"#,
+    );
+
     if plan.summary.add > 0 {
-        html.push_str(&format!(r#"
+        html.push_str(&format!(
+            r#"
                 <div class="stat-box add">
                     <div class="stat-icon">➕</div>
                     <div class="stat-number">{}</div>
                     <div class="stat-label">to add</div>
-                </div>"#, plan.summary.add));
+                </div>"#,
+            plan.summary.add
+        ));
     }
-    
+
     if plan.summary.change > 0 {
-        html.push_str(&format!(r#"
+        html.push_str(&format!(
+            r#"
                 <div class="stat-box change">
                     <div class="stat-icon">🔄</div>
                     <div class="stat-number">{}</div>
                     <div class="stat-label">to change</div>
-                </div>"#, plan.summary.change));
+                </div>"#,
+            plan.summary.change
+        ));
     }
-    
+
     if plan.summary.destroy > 0 {
-        html.push_str(&format!(r#"
+        html.push_str(&format!(
+            r#"
                 <div class="stat-box destroy">
                     <div class="stat-icon">🗑️</div>
                     <div class="stat-number">{}</div>
                     <div class="stat-label">to destroy</div>
-                </div>"#, plan.summary.destroy));
+                </div>"#,
+            plan.summary.destroy
+        ));
     }
-    
+
     if plan.summary.read > 0 || !plan.data_sources.is_empty() {
-        let read_count = if plan.summary.read > 0 { 
-            plan.summary.read 
-        } else { 
-            plan.data_sources.len() 
+        let read_count = if plan.summary.read > 0 {
+            plan.summary.read
+        } else {
+            plan.data_sources.len()
         };
-        html.push_str(&format!(r#"
+        html.push_str(&format!(
+            r#"
                 <div class="stat-box read">
                     <div class="stat-icon">📖</div>
                     <div class="stat-number">{}</div>
                     <div class="stat-label">data source{} to read</div>
-                </div>"#, 
-                read_count,
-                if read_count == 1 { "" } else { "s" }
+                </div>"#,
+            read_count,
+            if read_count == 1 { "" } else { "s" }
         ));
     }
-    
-    html.push_str(r#"
+
+    html.push_str(
+        r#"
             </div>
-        </div>"#);
-    
+        </div>"#,
+    );
+
     // Resources
     for resource in &plan.resources {
         let (action_class, action_text) = match resource.action {
@@ -483,100 +500,125 @@ pub fn format_html_output(plan: &TerraformPlan) -> String {
             ActionType::Read => ("action-read", "READ"),
             ActionType::NoOp => ("action-read", "NO-OP"),
         };
-        
-        let new_resource_class = if resource.action == ActionType::Create { 
-            " new-resource" 
-        } else { 
-            "" 
+
+        let new_resource_class = if resource.action == ActionType::Create {
+            " new-resource"
+        } else {
+            ""
         };
-        
-        html.push_str(&format!(r#"
+
+        html.push_str(&format!(
+            r#"
         <div class="resource-section{}">
             <div class="resource-header">
                 <span class="action-badge {}">{}</span>
                 <span class="resource-name">{}</span>"#,
-            new_resource_class, action_class, action_text, resource.id));
-        
+            new_resource_class, action_class, action_text, resource.id
+        ));
+
         // Add resource ID if it's an update
         if resource.action == ActionType::Update && !resource.attributes.is_empty() {
             if let Some(id_value) = resource.attributes.get("id") {
                 if let Value::String(id_str) = id_value {
-                    html.push_str(&format!(r#"
-                <span class="resource-id">id: {}</span>"#, id_str));
+                    html.push_str(&format!(
+                        r#"
+                <span class="resource-id">id: {}</span>"#,
+                        id_str
+                    ));
                 }
             }
         }
-        
-        html.push_str(r#"
-            </div>"#);
-        
+
+        html.push_str(
+            r#"
+            </div>"#,
+        );
+
         // Format resource content based on action type
         match resource.action {
             ActionType::Update => {
                 // For updates, show side-by-side diff
                 html.push_str(&format_update_diff(resource));
-            },
+            }
             _ => {
                 // For create/destroy/read, show single column
                 html.push_str(&format_single_column(resource));
             }
         }
-        
-        html.push_str(r#"
-        </div>"#);
+
+        html.push_str(
+            r#"
+        </div>"#,
+        );
     }
-    
+
     // Data Sources
     for data_source in &plan.data_sources {
-        html.push_str(&format!(r#"
+        html.push_str(&format!(
+            r#"
         <div class="resource-section">
             <div class="resource-header">
                 <span class="action-badge action-read">READ</span>
                 <span class="resource-name">{}</span>
-            </div>"#, data_source.id));
-        
-        html.push_str(r#"
+            </div>"#,
+            data_source.id
+        ));
+
+        html.push_str(
+            r#"
             <div class="diff-container">
                 <div class="diff-side single">
-                    <div class="diff-content">"#);
-        
+                    <div class="diff-content">"#,
+        );
+
         // Handle data source attributes
         for (key, value) in &data_source.attributes {
             html.push_str(&format_attribute_line(key, value, LineType::Add));
         }
-        
-        html.push_str(r#"</div>
+
+        html.push_str(
+            r#"</div>
                 </div>
             </div>
-        </div>"#);
+        </div>"#,
+        );
     }
-    
+
     // Warnings Section
     if !plan.warnings.is_empty() {
-        html.push_str(r#"
+        html.push_str(
+            r#"
         <div class="warnings-section">
             <div class="warnings-header">
                 <span>⚠️</span>
                 <span>Warnings</span>
-            </div>"#);
-        
+            </div>"#,
+        );
+
         for warning in &plan.warnings {
-            html.push_str(&format!(r#"
+            html.push_str(&format!(
+                r#"
             <div class="warning-item">
                 <div class="warning-title">Warning</div>
                 <div class="warning-text">{}</div>
-            </div>"#, html_escape(&warning.message)));
+            </div>"#,
+                html_escape(&warning.message)
+            ));
         }
-        
-        html.push_str(r#"
-        </div>"#);
+
+        html.push_str(
+            r#"
+        </div>"#,
+        );
     }
-    
-    html.push_str(r#"
+
+    html.push_str(
+        r#"
     </div>
 </body>
-</html>"#);
-    
+</html>"#,
+    );
+
     html
 }
 
@@ -588,16 +630,16 @@ enum LineType {
 
 fn format_update_diff(resource: &crate::Resource) -> String {
     let mut html = String::new();
-    
+
     // If we have changes, show them in side-by-side format
     if !resource.changes.is_empty() {
         // Group changes for before/after display
         let mut before_lines = Vec::new();
         let mut after_lines = Vec::new();
-        
+
         for change in &resource.changes {
             let path = change.path.join(".");
-            
+
             match (&change.before, &change.after) {
                 (Some(before), Some(after)) if before != after => {
                     // Changed value
@@ -605,34 +647,39 @@ fn format_update_diff(resource: &crate::Resource) -> String {
                         path, format_value(before, false)));
                     after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
                         path, format_value(after, false)));
-                },
+                }
                 (None, Some(after)) => {
                     // Added value
                     after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
                         path, format_value(after, false)));
-                },
+                }
                 (Some(before), None) => {
                     // Removed value
                     before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
                         path, format_value(before, false)));
-                },
+                }
                 _ => {
                     // Unchanged or computed
                     if change.computed {
-                        let line = format!(r#"<span class="line unchanged">    <span class="attribute">{}</span> = <span class="value">(known after apply)</span></span>"#, path);
+                        let line = format!(
+                            r#"<span class="line unchanged">    <span class="attribute">{}</span> = <span class="value">(known after apply)</span></span>"#,
+                            path
+                        );
                         before_lines.push(line.clone());
                         after_lines.push(line);
                     }
                 }
             }
         }
-        
-        html.push_str(r#"
+
+        html.push_str(
+            r#"
             <div class="diff-container">
                 <div class="diff-side">
                     <div class="diff-header">Current State</div>
-                    <div class="diff-content">"#);
-        
+                    <div class="diff-content">"#,
+        );
+
         if before_lines.is_empty() {
             html.push_str(r#"<span class="line unchanged">    # (no previous state)</span>"#);
         } else {
@@ -641,26 +688,30 @@ fn format_update_diff(resource: &crate::Resource) -> String {
                 html.push('\n');
             }
         }
-        
-        html.push_str(r#"</div>
+
+        html.push_str(
+            r#"</div>
                 </div>
                 <div class="diff-side">
                     <div class="diff-header">After Apply</div>
-                    <div class="diff-content">"#);
-        
+                    <div class="diff-content">"#,
+        );
+
         for line in after_lines {
             html.push_str(&line);
             html.push('\n');
         }
-        
-        html.push_str(r#"</div>
+
+        html.push_str(
+            r#"</div>
                 </div>
-            </div>"#);
+            </div>"#,
+        );
     } else if !resource.attributes.is_empty() {
         // Fallback to parsing attributes for side-by-side display
         html.push_str(&format_attributes_as_diff(resource));
     }
-    
+
     html
 }
 
@@ -668,7 +719,7 @@ fn format_attributes_as_diff(resource: &crate::Resource) -> String {
     let mut html = String::new();
     let mut before_lines = Vec::new();
     let mut after_lines = Vec::new();
-    
+
     // Parse attributes and convert arrow notation to side-by-side
     for (key, value) in &resource.attributes {
         if let Value::String(val_str) = value {
@@ -685,8 +736,11 @@ fn format_attributes_as_diff(resource: &crate::Resource) -> String {
             }
             // Check for addition prefix
             else if val_str.starts_with("+ ") {
-                after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
-                    key, format_value(&json!(&val_str[2..]), true)));
+                after_lines.push(format!(
+                    r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
+                    key,
+                    format_value(&json!(&val_str[2..]), true)
+                ));
                 continue;
             }
             // Check for removal prefix
@@ -696,20 +750,25 @@ fn format_attributes_as_diff(resource: &crate::Resource) -> String {
                 continue;
             }
         }
-        
+
         // Default: show on both sides as unchanged
-        let line = format!(r#"<span class="line unchanged">    <span class="attribute">{}</span> = {}</span>"#,
-            key, format_value(value, true));
+        let line = format!(
+            r#"<span class="line unchanged">    <span class="attribute">{}</span> = {}</span>"#,
+            key,
+            format_value(value, true)
+        );
         before_lines.push(line.clone());
         after_lines.push(line);
     }
-    
-    html.push_str(r#"
+
+    html.push_str(
+        r#"
             <div class="diff-container">
                 <div class="diff-side">
                     <div class="diff-header">Current State</div>
-                    <div class="diff-content">"#);
-    
+                    <div class="diff-content">"#,
+    );
+
     if before_lines.is_empty() {
         html.push_str(r#"<span class="line unchanged">    # (no previous state)</span>"#);
     } else {
@@ -718,47 +777,61 @@ fn format_attributes_as_diff(resource: &crate::Resource) -> String {
             html.push('\n');
         }
     }
-    
-    html.push_str(r#"</div>
+
+    html.push_str(
+        r#"</div>
                 </div>
                 <div class="diff-side">
                     <div class="diff-header">After Apply</div>
-                    <div class="diff-content">"#);
-    
+                    <div class="diff-content">"#,
+    );
+
     for line in after_lines {
         html.push_str(&line);
         html.push('\n');
     }
-    
-    html.push_str(r#"</div>
+
+    html.push_str(
+        r#"</div>
                 </div>
-            </div>"#);
-    
+            </div>"#,
+    );
+
     html
 }
 
 fn format_single_column(resource: &crate::Resource) -> String {
     let mut html = String::new();
-    
-    html.push_str(r#"
+
+    html.push_str(
+        r#"
             <div class="diff-container">
                 <div class="diff-side single">
-                    <div class="diff-content">"#);
-    
+                    <div class="diff-content">"#,
+    );
+
     // Show changes if available
     if !resource.changes.is_empty() {
         for change in &resource.changes {
             let path = change.path.join(".");
-            
+
             match (&change.before, &change.after) {
                 (None, Some(after)) => {
-                    html.push_str(&format!(r#"<span class="line add"><span class="attribute">{}</span> = {}</span>
-"#, path, format_value(after, true)));
-                },
+                    html.push_str(&format!(
+                        r#"<span class="line add"><span class="attribute">{}</span> = {}</span>
+"#,
+                        path,
+                        format_value(after, true)
+                    ));
+                }
                 (Some(before), None) => {
-                    html.push_str(&format!(r#"<span class="line remove"><span class="attribute">{}</span> = {}</span>
-"#, path, format_value(before, true)));
-                },
+                    html.push_str(&format!(
+                        r#"<span class="line remove"><span class="attribute">{}</span> = {}</span>
+"#,
+                        path,
+                        format_value(before, true)
+                    ));
+                }
                 _ => {
                     if change.computed {
                         html.push_str(&format!(r#"<span class="line add"><span class="attribute">{}</span> = <span class="value">(known after apply)</span></span>
@@ -778,11 +851,13 @@ fn format_single_column(resource: &crate::Resource) -> String {
             html.push_str(&format_attribute_line(key, value, line_type));
         }
     }
-    
-    html.push_str(r#"</div>
+
+    html.push_str(
+        r#"</div>
                 </div>
-            </div>"#);
-    
+            </div>"#,
+    );
+
     html
 }
 
@@ -792,9 +867,14 @@ fn format_attribute_line(key: &str, value: &Value, line_type: LineType) -> Strin
         LineType::Remove => "remove",
         LineType::Unchanged => "unchanged",
     };
-    
-    format!(r#"<span class="line {}"><span class="attribute">{}</span> = {}</span>
-"#, class, key, format_value(value, true))
+
+    format!(
+        r#"<span class="line {}"><span class="attribute">{}</span> = {}</span>
+"#,
+        class,
+        key,
+        format_value(value, true)
+    )
 }
 
 fn format_value(value: &Value, with_quotes: bool) -> String {
@@ -807,7 +887,7 @@ fn format_value(value: &Value, with_quotes: bool) -> String {
             } else {
                 format!(r#"<span class="string-value">{}</span>"#, html_escape(s))
             }
-        },
+        }
         Value::Number(n) => format!(r#"<span class="value">{}</span>"#, n),
         Value::Bool(b) => format!(r#"<span class="value">{}</span>"#, b),
         Value::Null => format!(r#"<span class="value">null</span>"#),
@@ -815,26 +895,33 @@ fn format_value(value: &Value, with_quotes: bool) -> String {
             if arr.is_empty() {
                 format!(r#"<span class="value">[]</span>"#)
             } else {
-                let items: Vec<String> = arr.iter()
-                    .map(|v| format_value(v, true))
-                    .collect();
-                format!(r#"[
+                let items: Vec<String> = arr.iter().map(|v| format_value(v, true)).collect();
+                format!(
+                    r#"[
 {}
-]"#, items.join(",\n    "))
+]"#,
+                    items.join(",\n    ")
+                )
             }
-        },
+        }
         Value::Object(obj) => {
             if obj.is_empty() {
                 format!(r#"<span class="value">{{}}</span>"#)
             } else {
                 let mut items = Vec::new();
                 for (k, v) in obj {
-                    items.push(format!(r#"    <span class="attribute">{}</span> = {}"#, 
-                        k, format_value(v, true)));
+                    items.push(format!(
+                        r#"    <span class="attribute">{}</span> = {}"#,
+                        k,
+                        format_value(v, true)
+                    ));
                 }
-                format!(r#"{{
+                format!(
+                    r#"{{
 {}
-}}"#, items.join("\n"))
+}}"#,
+                    items.join("\n")
+                )
             }
         }
     }
@@ -842,8 +929,8 @@ fn format_value(value: &Value, with_quotes: bool) -> String {
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
-     .replace('<', "&lt;")
-     .replace('>', "&gt;")
-     .replace('"', "&quot;")
-     .replace('\'', "&#x27;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
 }

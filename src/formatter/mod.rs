@@ -1,9 +1,9 @@
-pub mod terminal;
-pub mod json;
 pub mod html;
+pub mod json;
 pub mod markdown;
+pub mod terminal;
 
-pub use terminal::*;
-pub use json::*;
 pub use html::*;
+pub use json::*;
 pub use markdown::*;
+pub use terminal::*;

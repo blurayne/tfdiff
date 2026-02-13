@@ -1,7 +1,7 @@
 // Test library entry point
 pub mod common;
-pub mod unit;
 pub mod integration;
+pub mod unit;
 
 // Import the main library for testing
 pub use tfdiff;
