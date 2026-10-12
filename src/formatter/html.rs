@@ -409,27 +409,42 @@ pub fn format_html_output(plan: &TerraformPlan) -> String {
     <div class="container">"#);
 
     // Header with shimmer effect
+    let (title, subtitle) = if plan.mode == crate::PlanMode::StateDiff {
+        (
+            "Terraform State Snapshot Diff",
+            "Observed differences between two state snapshots; actions are not predictions.",
+        )
+    } else {
+        ("Terraform Plan Analysis", "Infrastructure changes")
+    };
     let timestamp = Local::now().format("%B %d, %Y").to_string();
     html.push_str(&format!(
         r#"
         <div class="header">
-            <h1>Terraform Plan Analysis</h1>
-            <div class="subtitle">Infrastructure changes</div>
+            <h1>{}</h1>
+            <div class="subtitle">{}</div>
             <div class="timestamp">Generated on {}</div>
         </div>"#,
-        timestamp
+        html_escape(title),
+        html_escape(subtitle),
+        html_escape(&timestamp)
     ));
 
     // Summary Card
-    html.push_str(
+    html.push_str(&format!(
         r#"
         <div class="summary-card">
             <div class="summary-title">
                 <span>📊</span>
-                <span>Plan Summary</span>
+                <span>{}</span>
             </div>
             <div class="summary-grid">"#,
-    );
+        if plan.mode == crate::PlanMode::StateDiff {
+            "Observed Differences"
+        } else {
+            "Plan Summary"
+        }
+    ));
 
     if plan.summary.add > 0 {
         html.push_str(&format!(
@@ -513,7 +528,10 @@ pub fn format_html_output(plan: &TerraformPlan) -> String {
             <div class="resource-header">
                 <span class="action-badge {}">{}</span>
                 <span class="resource-name">{}</span>"#,
-            new_resource_class, action_class, action_text, resource.id
+            new_resource_class,
+            action_class,
+            action_text,
+            html_escape(&resource.id)
         ));
 
         // Add resource ID if it's an update
@@ -523,7 +541,7 @@ pub fn format_html_output(plan: &TerraformPlan) -> String {
                     html.push_str(&format!(
                         r#"
                 <span class="resource-id">id: {}</span>"#,
-                        id_str
+                        html_escape(id_str)
                     ));
                 }
             }
@@ -538,7 +556,7 @@ pub fn format_html_output(plan: &TerraformPlan) -> String {
         match resource.action {
             ActionType::Update => {
                 // For updates, show side-by-side diff
-                html.push_str(&format_update_diff(resource));
+                html.push_str(&format_update_diff(resource, &plan.mode));
             }
             _ => {
                 // For create/destroy/read, show single column
@@ -628,7 +646,7 @@ enum LineType {
     Unchanged,
 }
 
-fn format_update_diff(resource: &crate::Resource) -> String {
+fn format_update_diff(resource: &crate::Resource, mode: &crate::PlanMode) -> String {
     let mut html = String::new();
 
     // If we have changes, show them in side-by-side format
@@ -641,29 +659,50 @@ fn format_update_diff(resource: &crate::Resource) -> String {
             let path = change.path.join(".");
 
             match (&change.before, &change.after) {
+                (_, _) if change.sensitive => {
+                    let changed = change.before.is_some() && change.after.is_some();
+                    let value = if changed {
+                        "(sensitive value changed)"
+                    } else {
+                        "(sensitive value)"
+                    };
+                    let line = format!(
+                        r#"<span class="line remove">    <span class="attribute">{}</span> = {value}</span>"#,
+                        html_escape(&path)
+                    );
+                    if change.before.is_some() {
+                        before_lines.push(line.clone());
+                    }
+                    if change.after.is_some() {
+                        after_lines.push(line.replace("line remove", "line add"));
+                    }
+                }
                 (Some(before), Some(after)) if before != after => {
                     // Changed value
-                    before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
-                        path, format_value(before, false)));
-                    after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
-                        path, format_value(after, false)));
+                    if change.sensitive {
+                        before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = (sensitive value)</span>"#, html_escape(&path)));
+                        after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = (sensitive value)</span>"#, html_escape(&path)));
+                    } else {
+                        before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
+                            html_escape(&path), format_value(before, false)));
+                        after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
+                            html_escape(&path), format_value(after, false)));
+                    }
                 }
                 (None, Some(after)) => {
-                    // Added value
                     after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
-                        path, format_value(after, false)));
+                        html_escape(&path), if change.sensitive { "(sensitive value)".to_string() } else { format_value(after, false) }));
                 }
                 (Some(before), None) => {
-                    // Removed value
                     before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
-                        path, format_value(before, false)));
+                        html_escape(&path), if change.sensitive { "(sensitive value)".to_string() } else { format_value(before, false) }));
                 }
                 _ => {
                     // Unchanged or computed
                     if change.computed {
                         let line = format!(
                             r#"<span class="line unchanged">    <span class="attribute">{}</span> = <span class="value">(known after apply)</span></span>"#,
-                            path
+                            html_escape(&path)
                         );
                         before_lines.push(line.clone());
                         after_lines.push(line);
@@ -672,13 +711,18 @@ fn format_update_diff(resource: &crate::Resource) -> String {
             }
         }
 
-        html.push_str(
+        html.push_str(&format!(
             r#"
             <div class="diff-container">
                 <div class="diff-side">
-                    <div class="diff-header">Current State</div>
+                    <div class="diff-header">{}</div>
                     <div class="diff-content">"#,
-        );
+            html_escape(if *mode == crate::PlanMode::StateDiff {
+                "Older Snapshot"
+            } else {
+                "Current State"
+            })
+        ));
 
         if before_lines.is_empty() {
             html.push_str(r#"<span class="line unchanged">    # (no previous state)</span>"#);
@@ -689,13 +733,18 @@ fn format_update_diff(resource: &crate::Resource) -> String {
             }
         }
 
-        html.push_str(
+        html.push_str(&format!(
             r#"</div>
                 </div>
                 <div class="diff-side">
-                    <div class="diff-header">After Apply</div>
+                    <div class="diff-header">{}</div>
                     <div class="diff-content">"#,
-        );
+            html_escape(if *mode == crate::PlanMode::StateDiff {
+                "Later Snapshot"
+            } else {
+                "After Apply"
+            })
+        ));
 
         for line in after_lines {
             html.push_str(&line);
@@ -709,13 +758,13 @@ fn format_update_diff(resource: &crate::Resource) -> String {
         );
     } else if !resource.attributes.is_empty() {
         // Fallback to parsing attributes for side-by-side display
-        html.push_str(&format_attributes_as_diff(resource));
+        html.push_str(&format_attributes_as_diff(resource, mode));
     }
 
     html
 }
 
-fn format_attributes_as_diff(resource: &crate::Resource) -> String {
+fn format_attributes_as_diff(resource: &crate::Resource, mode: &crate::PlanMode) -> String {
     let mut html = String::new();
     let mut before_lines = Vec::new();
     let mut after_lines = Vec::new();
@@ -728,9 +777,9 @@ fn format_attributes_as_diff(resource: &crate::Resource) -> String {
                 let parts: Vec<&str> = val_str.splitn(2, " → ").collect();
                 if parts.len() == 2 {
                     before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
-                        key, format_value(&json!(parts[0]), true)));
+                        html_escape(key), format_value(&json!(parts[0]), true)));
                     after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
-                        key, format_value(&json!(parts[1]), true)));
+                        html_escape(key), format_value(&json!(parts[1]), true)));
                     continue;
                 }
             }
@@ -738,7 +787,7 @@ fn format_attributes_as_diff(resource: &crate::Resource) -> String {
             else if val_str.starts_with("+ ") {
                 after_lines.push(format!(
                     r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
-                    key,
+                    html_escape(key),
                     format_value(&json!(&val_str[2..]), true)
                 ));
                 continue;
@@ -746,7 +795,7 @@ fn format_attributes_as_diff(resource: &crate::Resource) -> String {
             // Check for removal prefix
             else if val_str.starts_with("- ") {
                 before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
-                    key, format_value(&json!(&val_str[2..]), true)));
+                    html_escape(key), format_value(&json!(&val_str[2..]), true)));
                 continue;
             }
         }
@@ -754,20 +803,25 @@ fn format_attributes_as_diff(resource: &crate::Resource) -> String {
         // Default: show on both sides as unchanged
         let line = format!(
             r#"<span class="line unchanged">    <span class="attribute">{}</span> = {}</span>"#,
-            key,
+            html_escape(key),
             format_value(value, true)
         );
         before_lines.push(line.clone());
         after_lines.push(line);
     }
 
-    html.push_str(
+    html.push_str(&format!(
         r#"
             <div class="diff-container">
                 <div class="diff-side">
-                    <div class="diff-header">Current State</div>
+                    <div class="diff-header">{}</div>
                     <div class="diff-content">"#,
-    );
+        html_escape(if *mode == crate::PlanMode::StateDiff {
+            "Older Snapshot"
+        } else {
+            "Current State"
+        })
+    ));
 
     if before_lines.is_empty() {
         html.push_str(r#"<span class="line unchanged">    # (no previous state)</span>"#);
@@ -778,13 +832,18 @@ fn format_attributes_as_diff(resource: &crate::Resource) -> String {
         }
     }
 
-    html.push_str(
+    html.push_str(&format!(
         r#"</div>
                 </div>
                 <div class="diff-side">
-                    <div class="diff-header">After Apply</div>
+                    <div class="diff-header">{}</div>
                     <div class="diff-content">"#,
-    );
+        html_escape(if *mode == crate::PlanMode::StateDiff {
+            "Later Snapshot"
+        } else {
+            "After Apply"
+        })
+    ));
 
     for line in after_lines {
         html.push_str(&line);
@@ -820,7 +879,7 @@ fn format_single_column(resource: &crate::Resource) -> String {
                     html.push_str(&format!(
                         r#"<span class="line add"><span class="attribute">{}</span> = {}</span>
 "#,
-                        path,
+                        html_escape(&path),
                         format_value(after, true)
                     ));
                 }
@@ -828,14 +887,14 @@ fn format_single_column(resource: &crate::Resource) -> String {
                     html.push_str(&format!(
                         r#"<span class="line remove"><span class="attribute">{}</span> = {}</span>
 "#,
-                        path,
+                        html_escape(&path),
                         format_value(before, true)
                     ));
                 }
                 _ => {
                     if change.computed {
                         html.push_str(&format!(r#"<span class="line add"><span class="attribute">{}</span> = <span class="value">(known after apply)</span></span>
-"#, path));
+"#, html_escape(&path)));
                     }
                 }
             }
@@ -872,7 +931,7 @@ fn format_attribute_line(key: &str, value: &Value, line_type: LineType) -> Strin
         r#"<span class="line {}"><span class="attribute">{}</span> = {}</span>
 "#,
         class,
-        key,
+        html_escape(key),
         format_value(value, true)
     )
 }
@@ -881,7 +940,7 @@ fn format_value(value: &Value, with_quotes: bool) -> String {
     match value {
         Value::String(s) => {
             if s == "(known after apply)" {
-                format!(r#"<span class="value">{}</span>"#, s)
+                "<span class=\"value\">(known after apply)</span>".to_string()
             } else if with_quotes {
                 format!(r#"<span class="string-value">"{}"</span>"#, html_escape(s))
             } else {
@@ -890,10 +949,10 @@ fn format_value(value: &Value, with_quotes: bool) -> String {
         }
         Value::Number(n) => format!(r#"<span class="value">{}</span>"#, n),
         Value::Bool(b) => format!(r#"<span class="value">{}</span>"#, b),
-        Value::Null => format!(r#"<span class="value">null</span>"#),
+        Value::Null => "<span class=\"value\">null</span>".to_string(),
         Value::Array(arr) => {
             if arr.is_empty() {
-                format!(r#"<span class="value">[]</span>"#)
+                "<span class=\"value\">[]</span>".to_string()
             } else {
                 let items: Vec<String> = arr.iter().map(|v| format_value(v, true)).collect();
                 format!(
@@ -906,13 +965,13 @@ fn format_value(value: &Value, with_quotes: bool) -> String {
         }
         Value::Object(obj) => {
             if obj.is_empty() {
-                format!(r#"<span class="value">{{}}</span>"#)
+                "<span class=\"value\">{{}}</span>".to_string()
             } else {
                 let mut items = Vec::new();
                 for (k, v) in obj {
                     items.push(format!(
                         r#"    <span class="attribute">{}</span> = {}"#,
-                        k,
+                        html_escape(k),
                         format_value(v, true)
                     ));
                 }

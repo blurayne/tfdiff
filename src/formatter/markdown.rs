@@ -9,6 +9,7 @@ pub fn format_markdown_output(plan: &TerraformPlan) -> String {
         match plan.mode {
             crate::PlanMode::Plan => "Plan",
             crate::PlanMode::Apply => "Apply",
+            crate::PlanMode::StateDiff => "State Snapshot Diff",
         }
     ));
 
@@ -49,9 +50,72 @@ pub fn format_markdown_output(plan: &TerraformPlan) -> String {
                 emoji, action_text, resource.id
             ));
 
-            if !resource.attributes.is_empty() {
+            if !resource.changes.is_empty() {
+                md.push_str("| Attribute | Before | After |\n|---|---|---|\n");
+                for change in &resource.changes {
+                    if change.sensitive {
+                        let marker = if change.before.is_some() && change.after.is_some() {
+                            "(sensitive value changed; redacted as (sensitive value))"
+                        } else {
+                            "(sensitive value)"
+                        };
+                        let before = if change.before.is_some() {
+                            marker
+                        } else {
+                            "—"
+                        };
+                        let after = if change.after.is_some() {
+                            marker
+                        } else {
+                            "—"
+                        };
+                        md.push_str(&format!(
+                            "| `{}` | {} | {} |\n",
+                            change.path.join("."),
+                            before,
+                            after
+                        ));
+                        continue;
+                    }
+                    let before = if change.sensitive {
+                        if change.before.is_some() && change.after.is_some() {
+                            "(sensitive value changed)".to_string()
+                        } else {
+                            "(sensitive value)".to_string()
+                        }
+                    } else {
+                        change
+                            .before
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "—".to_string())
+                    };
+                    let after = if change.sensitive {
+                        if change.before.is_some() && change.after.is_some() {
+                            "(sensitive value changed)".to_string()
+                        } else {
+                            "(sensitive value)".to_string()
+                        }
+                    } else {
+                        change
+                            .after
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "—".to_string())
+                    };
+                    md.push_str(&format!(
+                        "| `{}` | {} | {} |\n",
+                        change.path.join("."),
+                        before,
+                        after
+                    ));
+                }
+                md.push('\n');
+            } else if !resource.attributes.is_empty() {
                 md.push_str("```json\n");
-                for (key, value) in &resource.attributes {
+                let mut attributes: Vec<_> = resource.attributes.iter().collect();
+                attributes.sort_by(|left, right| left.0.cmp(right.0));
+                for (key, value) in attributes {
                     md.push_str(&format!("{}: {}\n", key, value));
                 }
                 md.push_str("```\n\n");

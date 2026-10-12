@@ -75,6 +75,22 @@ tfdiff plan.txt --format html > report.html
 tfdiff plan.txt --format markdown > plan.md
 ```
 
+### State snapshot comparison
+
+Compare two Terraform v4 state snapshots directly. The first path is the older (before) snapshot; the second is the later (after) snapshot. The explicit `diff` command is equivalent. This mode reports observed resource additions, removals, and attribute updates; it does not refresh resources, infer replacements, or produce an applyable plan. Root outputs are currently excluded. Sensitive paths are redacted, but unmarked state values can still be confidential: protect reports and exports like the original state files.
+
+```bash
+# Terminal comparison and HTML report
+ tfdiff older.tfstate later.tfstate
+ tfdiff older.tfstate later.tfstate --format html > state-diff.html
+ tfdiff diff older.tfstate later.tfstate --browser
+
+# Optional redacted, partial Terraform-show-like JSON export
+ tfdiff older.tfstate later.tfstate --generate-tfplan-file comparison.json
+```
+
+The export contains resource changes and sensitivity masks only; it is not a Terraform state file or binary plan and cannot be applied.
+
 ### 🌐 Interactive Browser Mode
 The browser mode opens a beautiful, interactive HTML view in your default browser:
 
@@ -97,6 +113,9 @@ terraform plan | tfdiff --browser
 ```bash
 # Filter by action type in terminal
 tfdiff plan.txt --filter create,update
+
+# Sort resources by action (create, update, destroy, read, noop), then type, name, and ID
+tfdiff plan.txt --sort-by action
 
 # Verbose output with extra details
 tfdiff plan.txt --verbose

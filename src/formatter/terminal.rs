@@ -15,6 +15,7 @@ pub fn format_terminal_output(plan: &TerraformPlan) -> String {
     let mode_text = match plan.mode {
         crate::PlanMode::Plan => "TERRAFORM PLAN ANALYSIS".bright_cyan(),
         crate::PlanMode::Apply => "TERRAFORM APPLY ANALYSIS".bright_yellow(),
+        crate::PlanMode::StateDiff => "TERRAFORM STATE SNAPSHOT DIFF".bright_cyan(),
     };
     output.push_str(&format!("║{:^78}║\n", mode_text));
 
@@ -31,7 +32,12 @@ pub fn format_terminal_output(plan: &TerraformPlan) -> String {
         || plan.summary.read > 0
     {
         output.push_str(&"📊 ".to_string());
-        output.push_str(&"PLAN SUMMARY".bright_white().bold().to_string());
+        let summary_title = if plan.mode == crate::PlanMode::StateDiff {
+            "OBSERVED SNAPSHOT DIFFERENCES"
+        } else {
+            "PLAN SUMMARY"
+        };
+        output.push_str(&summary_title.bright_white().bold().to_string());
         output.push('\n');
         output.push_str(&"─".repeat(80).dimmed().to_string());
         output.push('\n');
@@ -39,24 +45,42 @@ pub fn format_terminal_output(plan: &TerraformPlan) -> String {
 
         // Summary stats in a grid layout
         if plan.summary.add > 0 {
+            let action_text = if plan.mode == crate::PlanMode::StateDiff {
+                "resources observed as added"
+            } else {
+                "resources to add"
+            };
             output.push_str(&format!(
-                "  {} {} resources to add\n",
+                "  {} {} {}\n",
                 "➕".bright_green(),
-                plan.summary.add.to_string().bright_green().bold()
+                plan.summary.add.to_string().bright_green().bold(),
+                action_text
             ));
         }
         if plan.summary.change > 0 {
+            let action_text = if plan.mode == crate::PlanMode::StateDiff {
+                "resources observed as changed"
+            } else {
+                "resources to change"
+            };
             output.push_str(&format!(
-                "  {} {} resources to change\n",
+                "  {} {} {}\n",
                 "🔄".bright_yellow(),
-                plan.summary.change.to_string().bright_yellow().bold()
+                plan.summary.change.to_string().bright_yellow().bold(),
+                action_text
             ));
         }
         if plan.summary.destroy > 0 {
+            let action_text = if plan.mode == crate::PlanMode::StateDiff {
+                "resources observed as removed"
+            } else {
+                "resources to destroy"
+            };
             output.push_str(&format!(
-                "  {} {} resources to destroy\n",
+                "  {} {} {}\n",
                 "🗑️".bright_red(),
-                plan.summary.destroy.to_string().bright_red().bold()
+                plan.summary.destroy.to_string().bright_red().bold(),
+                action_text
             ));
         }
         if plan.summary.read > 0 {
@@ -223,12 +247,12 @@ pub fn format_resource(resource: &crate::Resource) -> String {
 
                         let max_width = 40;
                         let before_truncated = if before.len() > max_width {
-                            format!("{}...", &before[..max_width - 3])
+                            format!("{}...", truncate_utf8(before, max_width - 3))
                         } else {
                             before.to_string()
                         };
                         let after_truncated = if after.len() > max_width {
-                            format!("{}...", &after[..max_width - 3])
+                            format!("{}...", truncate_utf8(after, max_width - 3))
                         } else {
                             after.to_string()
                         };
@@ -280,6 +304,26 @@ fn format_changes(changes: &[Change], _action: &ActionType) -> String {
             change.path.join(".")
         };
 
+        if change.sensitive {
+            let marker = if change.before.is_some() && change.after.is_some() {
+                "(sensitive value changed)"
+            } else {
+                "(sensitive value)"
+            };
+            let action = match (change.before.is_some(), change.after.is_some()) {
+                (true, false) => "-".bright_red().bold(),
+                (false, true) => "+".bright_green().bold(),
+                _ => "~".bright_yellow().bold(),
+            };
+            output.push_str(&format!(
+                "  {} {} = {}\n",
+                action,
+                path_str.bright_cyan(),
+                marker.italic().dimmed()
+            ));
+            continue;
+        }
+
         // Handle different change scenarios
         match (&change.before, &change.after) {
             (None, Some(after)) => {
@@ -328,12 +372,12 @@ fn format_changes(changes: &[Change], _action: &ActionType) -> String {
                 // Calculate column widths for alignment
                 let max_width = 40; // Maximum width for each column
                 let before_truncated = if before_formatted.len() > max_width {
-                    format!("{}...", &before_formatted[..max_width - 3])
+                    format!("{}...", truncate_utf8(&before_formatted, max_width - 3))
                 } else {
                     before_formatted.clone()
                 };
                 let after_truncated = if after_formatted.len() > max_width {
-                    format!("{}...", &after_formatted[..max_width - 3])
+                    format!("{}...", truncate_utf8(&after_formatted, max_width - 3))
                 } else {
                     after_formatted.clone()
                 };
@@ -370,6 +414,14 @@ fn format_changes(changes: &[Change], _action: &ActionType) -> String {
     }
 
     output
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 fn format_json_value(value: &Value, indent_level: usize) -> String {

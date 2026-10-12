@@ -28,6 +28,7 @@ impl Default for TerraformPlan {
 pub enum PlanMode {
     Plan,
     Apply,
+    StateDiff,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
