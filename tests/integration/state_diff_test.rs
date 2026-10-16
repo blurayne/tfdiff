@@ -47,19 +47,100 @@ fn positional_and_explicit_diff_render_observational_comparison() {
         .args([old.to_str().unwrap(), new.to_str().unwrap()])
         .output()
         .unwrap();
-    let explicit = Command::cargo_bin("tfdiff")
+    assert!(
+        !String::from_utf8_lossy(&positional.stdout).contains("Usage: tfdiff"),
+        "two positional state paths should compare even when stdin is a terminal"
+    );
+    assert!(positional.status.success());
+    let positional = String::from_utf8_lossy(&positional.stdout);
+    assert!(!positional.contains("TERRAFORM STATE SNAPSHOT DIFF"));
+    assert!(positional.contains("Older Snapshot") || positional.contains("test_resource.item"));
+    assert!(positional.contains("1 resources observed as changed"));
+}
+
+#[test]
+fn data_filters_cover_nested_addresses_data_sources_and_recalculate_summaries() {
+    let directory = tempdir().unwrap();
+    let old = directory.path().join("old.tfstate");
+    let new = directory.path().join("new.tfstate");
+    let state = |serial: u64| {
+        json!({
+            "version": 4,
+            "terraform_version": "1.8.0",
+            "serial": serial,
+            "lineage": "test-lineage",
+            "outputs": {},
+            "resources": [
+                {
+                    "mode": "managed",
+                    "type": "test_resource",
+                    "name": "managed",
+                    "provider": "provider[\"registry.terraform.io/hashicorp/test\"]",
+                    "instances": [{"attributes": {"name": format!("managed-{serial}"), "id": "managed-id"}}]
+                },
+                {
+                    "mode": "data",
+                    "type": "test_resource",
+                    "name": "lookup",
+                    "module": "module.app",
+                    "provider": "provider[\"registry.terraform.io/hashicorp/test\"]",
+                    "instances": [{"attributes": {"name": format!("lookup-{serial}"), "id": "lookup-id"}}]
+                }
+            ]
+        }).to_string()
+    };
+    fs::write(&old, state(1)).unwrap();
+    fs::write(&new, state(2)).unwrap();
+
+    let skipped = Command::cargo_bin("tfdiff")
         .unwrap()
-        .args(["diff", old.to_str().unwrap(), new.to_str().unwrap()])
+        .args([
+            old.to_str().unwrap(),
+            new.to_str().unwrap(),
+            "--skip-data",
+            "--format",
+            "json",
+        ])
         .output()
         .unwrap();
-    assert!(positional.status.success());
-    assert!(explicit.status.success());
-    let positional = String::from_utf8_lossy(&positional.stdout);
-    let explicit = String::from_utf8_lossy(&explicit.stdout);
-    assert!(positional.contains("TERRAFORM STATE SNAPSHOT DIFF"));
-    assert!(positional.contains("Older Snapshot") || positional.contains("test_resource.item"));
-    assert!(explicit.contains("TERRAFORM STATE SNAPSHOT DIFF"));
-    assert!(positional.contains("1 resources observed as changed"));
+    assert!(skipped.status.success());
+    let skipped: Value = serde_json::from_slice(&skipped.stdout).unwrap();
+    assert_eq!(skipped["resources"].as_array().unwrap().len(), 1);
+    assert_eq!(skipped["data_sources"].as_array().unwrap().len(), 0);
+    assert_eq!(skipped["summary"]["change"], 1);
+
+    let only = Command::cargo_bin("tfdiff")
+        .unwrap()
+        .args([
+            old.to_str().unwrap(),
+            new.to_str().unwrap(),
+            "--only-data",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(only.status.success());
+    let only: Value = serde_json::from_slice(&only.stdout).unwrap();
+    assert_eq!(only["resources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        only["resources"][0]["id"],
+        "module.app.data.test_resource.lookup"
+    );
+    assert_eq!(only["summary"]["change"], 1);
+    assert_eq!(only["data_sources"].as_array().unwrap().len(), 0);
+
+    let conflicting = Command::cargo_bin("tfdiff")
+        .unwrap()
+        .args([
+            old.to_str().unwrap(),
+            new.to_str().unwrap(),
+            "--only-data",
+            "--skip-data",
+        ])
+        .assert()
+        .failure();
+    let _ = conflicting;
 }
 
 #[test]
@@ -183,6 +264,18 @@ fn empty_objects_are_reported_alongside_siblings_on_creation_and_deletion() {
             assert!(output.contains("visible"));
             assert!(output.contains("1"));
         }
+
+        let html = tfdiff::format_html_output(&comparison.plan);
+        let empty_row = html
+            .split("<tr class=\"row-")
+            .find(|row| row.contains("<td class=\"path\">empty</td>"))
+            .expect("empty-object row should be present")
+            .split("</tr>")
+            .next()
+            .unwrap();
+        assert!(empty_row.contains("aria-label=\"No value\"") || empty_row.contains("{}"));
+        assert!(empty_row.contains("value before"));
+        assert!(empty_row.contains("value after"));
     }
 }
 
@@ -199,4 +292,52 @@ fn rejects_export_in_legacy_mode_and_too_many_paths() {
         .args(["a", "b", "c"])
         .assert()
         .failure();
+}
+
+#[test]
+fn state_secrets_are_masked_unless_raw_secrets() {
+    let directory = tempdir().unwrap();
+    let old = directory.path().join("old.tfstate");
+    let new = directory.path().join("new.tfstate");
+    fs::write(
+        &old,
+        synthetic_state(json!({"name":"acme","api_token":"acme-token-1"})),
+    )
+    .unwrap();
+    fs::write(
+        &new,
+        synthetic_state(
+            json!({"name":"acme","api_token":"acme-token-2","key":"AKIAIOSFODNN7EXAMPLE"}),
+        ),
+    )
+    .unwrap();
+    let run = |extra: &[&str]| {
+        let output = Command::cargo_bin("tfdiff")
+            .unwrap()
+            .args([
+                old.to_str().unwrap(),
+                new.to_str().unwrap(),
+                "--format",
+                "json",
+            ])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    let masked = run(&[]);
+    assert!(!masked.contains("acme-token-2"));
+    assert!(!masked.contains("AKIAIOSFODNN7EXAMPLE"));
+    assert!(masked.contains("(sensitive value)"));
+
+    let raw = run(&["--raw-secrets"]);
+    assert!(raw.contains("acme-token-1"));
+    assert!(raw.contains("acme-token-2"));
+    assert!(raw.contains("AKIAIOSFODNN7EXAMPLE"));
 }

@@ -70,6 +70,9 @@ mod proptest_integration {
 
             let plan = TerraformPlan {
                 mode: PlanMode::Plan,
+                source_versions: None,
+                author_attribution: None,
+                compact_sources: None,
                 summary: Summary { add, change, destroy, read: 0 },
                 resources: Vec::new(),
                 data_sources: Vec::new(),
@@ -93,6 +96,9 @@ mod proptest_integration {
 
             let plan = TerraformPlan {
                 mode: PlanMode::Plan,
+                source_versions: None,
+                author_attribution: None,
+                compact_sources: None,
                 summary: Summary { add, change, destroy, read: 0 },
                 resources: Vec::new(),
                 data_sources: Vec::new(),
@@ -122,6 +128,9 @@ mod proptest_integration {
 
             let plan = TerraformPlan {
                 mode: PlanMode::Plan,
+                source_versions: None,
+                author_attribution: None,
+                compact_sources: None,
                 summary: Summary { add, change, destroy: 0, read: 0 },
                 resources: Vec::new(),
                 data_sources: Vec::new(),

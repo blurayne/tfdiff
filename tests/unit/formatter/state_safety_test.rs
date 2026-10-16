@@ -17,6 +17,7 @@ fn html_escapes_resource_paths_and_attribute_keys() {
         },
         resources: vec![Resource {
             id: "test_resource.<script>alert(1)</script>".to_string(),
+            plan_delta: None,
             name: "item".to_string(),
             type_name: "test_resource".to_string(),
             provider: "test".to_string(),
@@ -29,7 +30,9 @@ fn html_escapes_resource_paths_and_attribute_keys() {
                 computed: false,
             }],
             attributes,
+            audit_attribution: None,
             applied: false,
+            source: None,
         }],
         ..Default::default()
     };
@@ -48,13 +51,16 @@ fn html_escapes_attribute_keys_in_fallback_diff_notations() {
             mode: PlanMode::StateDiff,
             resources: vec![Resource {
                 id: "test_resource.item".to_string(),
+                plan_delta: None,
                 name: "item".to_string(),
                 type_name: "test_resource".to_string(),
                 provider: "test".to_string(),
                 action: ActionType::Update,
                 changes: vec![],
                 attributes,
+                audit_attribution: None,
                 applied: false,
+                source: None,
             }],
             ..Default::default()
         };
@@ -65,19 +71,40 @@ fn html_escapes_attribute_keys_in_fallback_diff_notations() {
 }
 
 #[test]
+fn html_escapes_data_source_ids() {
+    let plan = TerraformPlan {
+        data_sources: vec![tfdiff::DataSource {
+            id: "data.test.<script>alert(1)</script>".to_string(),
+            name: "item".to_string(),
+            type_name: "test".to_string(),
+            provider: "test".to_string(),
+            attributes: HashMap::new(),
+        }],
+        ..Default::default()
+    };
+    let html = format_html_output(&plan);
+
+    assert!(html.contains("data.test.&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(!html.contains("<script>alert(1)</script>"));
+}
+
+#[test]
 fn html_escapes_attribute_keys_in_single_column_fallback() {
     let mut attributes = HashMap::new();
     attributes.insert("<img src=x onerror=alert(1)>".to_string(), json!("safe"));
     let plan = TerraformPlan {
         resources: vec![Resource {
             id: "test_resource.item".to_string(),
+            plan_delta: None,
             name: "item".to_string(),
             type_name: "test_resource".to_string(),
             provider: "test".to_string(),
             action: ActionType::Update,
             changes: vec![],
             attributes,
+            audit_attribution: None,
             applied: false,
+            source: None,
         }],
         ..Default::default()
     };
@@ -92,6 +119,7 @@ fn sensitive_changes_are_explicit_in_terminal_markdown_and_html() {
         mode: PlanMode::StateDiff,
         resources: vec![Resource {
             id: "test_resource.item".to_string(),
+            plan_delta: None,
             name: "item".to_string(),
             type_name: "test_resource".to_string(),
             provider: "test".to_string(),
@@ -104,7 +132,9 @@ fn sensitive_changes_are_explicit_in_terminal_markdown_and_html() {
                 computed: false,
             }],
             attributes: HashMap::new(),
+            audit_attribution: None,
             applied: false,
+            source: None,
         }],
         ..Default::default()
     };
@@ -119,6 +149,7 @@ fn partially_sensitive_composite_change_keeps_unmarked_siblings_visible() {
         mode: PlanMode::StateDiff,
         resources: vec![Resource {
             id: "test_resource.item".to_string(),
+            plan_delta: None,
             name: "item".to_string(),
             type_name: "test_resource".to_string(),
             provider: "test".to_string(),
@@ -146,7 +177,9 @@ fn partially_sensitive_composite_change_keeps_unmarked_siblings_visible() {
                 },
             ],
             attributes: HashMap::new(),
+            audit_attribution: None,
             applied: false,
+            source: None,
         }],
         ..Default::default()
     };
@@ -170,6 +203,7 @@ fn long_unicode_terminal_values_do_not_panic() {
     let plan = TerraformPlan {
         resources: vec![Resource {
             id: "test_resource.item".to_string(),
+            plan_delta: None,
             name: "item".to_string(),
             type_name: "test_resource".to_string(),
             provider: "test".to_string(),
@@ -182,7 +216,9 @@ fn long_unicode_terminal_values_do_not_panic() {
                 computed: false,
             }],
             attributes: HashMap::new(),
+            audit_attribution: None,
             applied: false,
+            source: None,
         }],
         ..Default::default()
     };

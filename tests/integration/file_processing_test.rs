@@ -113,10 +113,9 @@ mod file_processing_integration_tests {
     #[test]
     fn test_process_corrupted_json_fixture() {
         let content = load_malformed_fixture("corrupted_json.txt");
-        let result = parse_terraform_output(&content).unwrap();
+        let error = parse_terraform_output(&content).unwrap_err();
 
-        // Should handle malformed JSON gracefully
-        assert!(matches!(result.mode, PlanMode::Plan));
+        assert!(error.to_string().contains("not a supported Terraform"));
     }
 
     #[test]
@@ -125,7 +124,7 @@ mod file_processing_integration_tests {
         let parsed = parse_terraform_output(&content).unwrap();
         let formatted = format_terminal_output(&parsed);
 
-        assert!(clean_ansi_codes(&formatted).contains("TERRAFORM PLAN ANALYSIS"));
+        assert!(!clean_ansi_codes(&formatted).contains("TERRAFORM PLAN ANALYSIS"));
         assert!(clean_ansi_codes(&formatted).contains("1 resources to add"));
         assert!(!clean_ansi_codes(&formatted).contains("to change"));
         assert!(!clean_ansi_codes(&formatted).contains("to destroy"));
@@ -199,20 +198,14 @@ mod file_processing_integration_tests {
 
     #[test]
     fn test_error_handling_empty_input() {
-        let result = parse_terraform_output("");
-        assert!(result.is_ok());
-
-        let parsed = result.unwrap();
-        assert_summary_totals(&parsed.summary, 0, 0, 0);
+        let error = parse_terraform_output("").unwrap_err();
+        assert!(error.to_string().contains("not a supported Terraform"));
     }
 
     #[test]
     fn test_error_handling_invalid_input() {
         let invalid_input = "This is not terraform output at all!";
-        let result = parse_terraform_output(invalid_input);
-        assert!(result.is_ok());
-
-        let parsed = result.unwrap();
-        assert_summary_totals(&parsed.summary, 0, 0, 0);
+        let error = parse_terraform_output(invalid_input).unwrap_err();
+        assert!(error.to_string().contains("not a supported Terraform"));
     }
 }

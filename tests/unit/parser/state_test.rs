@@ -27,6 +27,7 @@ fn resource(name: &str, mode: &str, instances: serde_json::Value) -> serde_json:
 fn accepts_empty_and_identical_snapshots() {
     let empty = state(json!([]));
     let result = compare_states(&empty, &empty).unwrap();
+    assert!(result.plan.warnings.is_empty());
     assert_eq!(
         result.plan.summary.add + result.plan.summary.change + result.plan.summary.destroy,
         0
@@ -113,18 +114,26 @@ fn accepts_sensitive_paths_absent_only_on_opposite_snapshot() {
 }
 
 #[test]
-fn validates_duplicate_addresses_and_deposed_instances() {
+fn validates_duplicate_addresses_and_ignores_deposed_instances() {
     let duplicate = state(json!([
         resource("same", "managed", json!([{"attributes":{}}])),
         resource("same", "managed", json!([{"attributes":{}}]))
     ]));
     assert!(compare_states(&duplicate, &state(json!([]))).is_err());
+
     let deposed = state(json!([resource(
         "same",
         "managed",
-        json!([{"deposed":"deadbeef","attributes":{}}])
+        json!([{"deposed":"deadbeef","attributes":{"id":"retired"}}])
     )]));
-    assert!(compare_states(&deposed, &state(json!([]))).is_err());
+    let comparison = compare_states(&deposed, &state(json!([]))).unwrap();
+    assert_eq!(comparison.plan.summary.destroy, 0);
+    assert!(comparison.plan.resources.is_empty());
+    assert!(comparison
+        .plan
+        .warnings
+        .iter()
+        .any(|warning| warning.message.contains("Ignored deposed instances")));
 }
 
 #[test]

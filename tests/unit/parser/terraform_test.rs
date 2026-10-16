@@ -110,6 +110,50 @@ Plan: 1 to add, 0 to change, 0 to destroy.
     }
 
     #[test]
+    fn compares_text_plan_changes_as_before_and_after_values() {
+        let before = r#"# test_resource.item will be created
++ resource "test_resource" "item" {
+    + value = "one"
+}
+Plan: 1 to add, 0 to change, 0 to destroy."#;
+        let after = r#"# test_resource.item will be created
++ resource "test_resource" "item" {
+    + value = "two"
+}
+Plan: 1 to add, 0 to change, 0 to destroy."#;
+
+        let comparison = tfdiff::compare_plan_outputs(before, after).unwrap();
+        assert_eq!(comparison.mode, PlanMode::PlanDiff);
+        assert_eq!(comparison.summary.change, 1);
+        let resource = &comparison.resources[0];
+        assert_eq!(resource.plan_delta, Some(PlanDelta::Changed));
+        assert_eq!(resource.changes[0].before, Some(serde_json::json!("one")));
+        assert_eq!(resource.changes[0].after, Some(serde_json::json!("two")));
+    }
+
+    #[test]
+    fn reports_created_text_plan_attributes_without_action_markers() {
+        let empty = "Plan: 0 to add, 0 to change, 0 to destroy.";
+        let created = r#"# test_resource.item will be created
++ resource "test_resource" "item" {
+    + value = "one"
+}
+Plan: 1 to add, 0 to change, 0 to destroy."#;
+
+        let comparison = tfdiff::compare_plan_outputs(empty, created).unwrap();
+        assert_eq!(comparison.summary.add, 1);
+        assert_eq!(
+            comparison.resources[0].attributes["value"],
+            serde_json::json!("one")
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_text_as_a_plan_report() {
+        assert!(parse_terraform_output("not Terraform output").is_err());
+    }
+
+    #[test]
     fn test_parse_terraform_output_apply() {
         let input = r#"
 aws_s3_bucket.test: Creating...

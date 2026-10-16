@@ -76,6 +76,30 @@ mod json_formatter_tests {
     }
 
     #[test]
+    fn serializes_source_version_metadata() {
+        let mut plan = sample_terraform_plan();
+        plan.source_versions = Some(tfdiff::models::SourceVersions {
+            left_label: "Previous Version".to_string(),
+            right_label: "Selected Version".to_string(),
+            left: Some(tfdiff::models::SourceVersion {
+                version_id: Some("older".to_string()),
+                last_modified: Some("2026-01-01T00:00:00Z".to_string()),
+                etag: None,
+            }),
+            right: Some(tfdiff::models::SourceVersion {
+                version_id: Some("newer".to_string()),
+                last_modified: Some("2026-01-02T00:00:00Z".to_string()),
+                etag: None,
+            }),
+        });
+
+        let result = format_json_output(&plan).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["source_versions"]["left"]["version_id"], "older");
+        assert_eq!(parsed["source_versions"]["right"]["version_id"], "newer");
+    }
+
+    #[test]
     fn test_format_json_output_empty_plan() {
         let plan = tfdiff::models::TerraformPlan::default();
         let result = format_json_output(&plan).unwrap();
