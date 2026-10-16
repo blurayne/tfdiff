@@ -84,17 +84,23 @@ fn formatter_benchmarks(c: &mut Criterion) {
 
     let resource = Resource {
         id: "aws_s3_bucket.test".to_string(),
+        plan_delta: None,
         name: "test".to_string(),
         type_name: "aws_s3_bucket".to_string(),
         provider: "aws".to_string(),
         action: ActionType::Create,
         changes: Vec::new(),
         attributes,
+        audit_attribution: None,
         applied: false,
+        source: None,
     };
 
     let small_plan = TerraformPlan {
         mode: PlanMode::Plan,
+        source_versions: None,
+        author_attribution: None,
+        compact_sources: None,
         summary: Summary {
             add: 1,
             change: 0,

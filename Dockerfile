@@ -1,5 +1,5 @@
 # Multi-stage build for tfdiff
-FROM rust:1.75-slim AS builder
+FROM rust:1.94.1-slim AS builder
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 
-const SENSITIVE_PLACEHOLDER: &str = "(sensitive value)";
+use crate::secrets::SENSITIVE_PLACEHOLDER;
 
 #[derive(Debug, Clone)]
 pub struct StateComparison {
@@ -48,6 +48,7 @@ struct StateResource {
     name: String,
     index: Option<Value>,
     provider_name: String,
+    provider_config: String,
     attributes: Value,
     sensitive_paths: Vec<Vec<PathSegment>>,
 }
@@ -62,10 +63,23 @@ struct Snapshot {
     terraform_version: String,
     lineage: String,
     resources: BTreeMap<String, StateResource>,
+    deposed_instances: usize,
 }
 
 /// Compare two raw Terraform v4 state snapshots, with `older` as the before state.
+///
+/// Sensitive and secret-looking values are masked unless `--raw-secrets` is set
+/// (see [`crate::secrets`]).
 pub fn compare_states(older: &str, later: &str) -> crate::Result<StateComparison> {
+    compare_states_with_options(older, later, crate::secrets::raw_secrets())
+}
+
+/// Like [`compare_states`]; `raw_secrets` disables all masking.
+pub fn compare_states_with_options(
+    older: &str,
+    later: &str,
+    raw_secrets: bool,
+) -> crate::Result<StateComparison> {
     let before = parse_state(older)?;
     let after = parse_state(later)?;
     let mut plan = TerraformPlan {
@@ -83,11 +97,26 @@ pub fn compare_states(older: &str, later: &str) -> crate::Result<StateComparison
             level: WarningLevel::Warning,
         });
     }
-    plan.warnings.push(Warning {
-        message: "State diff actions describe observed snapshot differences, not Terraform predictions or apply instructions. Root outputs are not included.".to_string(),
-        level: WarningLevel::Info,
-    });
-
+    if before.resources.iter().any(|(address, previous)| {
+        after
+            .resources
+            .get(address)
+            .is_some_and(|current| previous.provider_config != current.provider_config)
+    }) {
+        plan.warnings.push(Warning {
+            message: "At least one resource changed provider configuration; attribute-only state differences may not capture provider reassignment effects.".to_string(),
+            level: WarningLevel::Warning,
+        });
+    }
+    if before.deposed_instances > 0 || after.deposed_instances > 0 {
+        plan.warnings.push(Warning {
+            message: format!(
+                "Ignored deposed instances in state snapshots (older: {}, later: {}); only current instances are compared.",
+                before.deposed_instances, after.deposed_instances
+            ),
+            level: WarningLevel::Info,
+        });
+    }
     let mut addresses: Vec<_> = before
         .resources
         .keys()
@@ -115,7 +144,9 @@ pub fn compare_states(older: &str, later: &str) -> crate::Result<StateComparison
                 previous,
             ),
             (Some(previous), Some(current)) => {
-                if previous.attributes == current.attributes {
+                if previous.attributes == current.attributes
+                    && previous.provider_config == current.provider_config
+                {
                     continue;
                 }
                 (
@@ -135,8 +166,14 @@ pub fn compare_states(older: &str, later: &str) -> crate::Result<StateComparison
                     .flat_map(|resource| resource.sensitive_paths.clone()),
             )
             .collect::<Vec<_>>();
+        for value in raw_before.iter().chain(raw_after.iter()) {
+            collect_secret_paths(value, &mut Vec::new(), &mut sensitive_paths);
+        }
         sensitive_paths.sort_by_key(|path| format!("{path:?}"));
         sensitive_paths.dedup();
+        if raw_secrets {
+            sensitive_paths.clear();
+        }
 
         let before_sensitive = raw_before
             .as_ref()
@@ -160,7 +197,10 @@ pub fn compare_states(older: &str, later: &str) -> crate::Result<StateComparison
             (None, None) => {}
         }
         changes.sort_by(|left, right| left.path.cmp(&right.path));
-        if changes.is_empty() && action == ActionType::Update {
+        let provider_changed = old
+            .zip(new)
+            .is_some_and(|(previous, current)| previous.provider_config != current.provider_config);
+        if changes.is_empty() && action == ActionType::Update && !provider_changed {
             continue;
         }
         let chosen_attrs = after_sensitive
@@ -180,13 +220,16 @@ pub fn compare_states(older: &str, later: &str) -> crate::Result<StateComparison
         }
         plan.resources.push(Resource {
             id: address.clone(),
+            plan_delta: None,
             name: mode_source.name.clone(),
             type_name: mode_source.type_name.clone(),
             provider: mode_source.provider_name.clone(),
             action: action.clone(),
             changes,
             attributes,
+            audit_attribution: None,
             applied: false,
+            source: None,
         });
         resource_changes.push(make_export_change(
             mode_source,
@@ -205,6 +248,30 @@ pub fn compare_states(older: &str, later: &str) -> crate::Result<StateComparison
             resource_changes,
         },
     })
+}
+
+/// Attribute-level changes between two resource attribute maps, sorted by path.
+///
+/// No additional masking is applied; pass attributes that are already redacted (as
+/// produced by [`compare_states`]).
+pub fn diff_attribute_maps(
+    before: &HashMap<String, Value>,
+    after: &HashMap<String, Value>,
+) -> Vec<Change> {
+    let to_object = |map: &HashMap<String, Value>| {
+        Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+    };
+    let mut changes = Vec::new();
+    // Without sensitive paths `diff_values` cannot fail.
+    let _ = diff_values(
+        &to_object(before),
+        &to_object(after),
+        &[],
+        &[],
+        &mut changes,
+    );
+    changes.sort_by(|left, right| left.path.cmp(&right.path));
+    changes
 }
 
 fn parse_state(input: &str) -> crate::Result<Snapshot> {
@@ -228,6 +295,7 @@ fn parse_state(input: &str) -> crate::Result<Snapshot> {
         .and_then(Value::as_array)
         .ok_or_else(|| state_error("resources must be an array"))?;
     let mut resources = BTreeMap::new();
+    let mut deposed_instances = 0;
 
     for resource_value in resource_values {
         let object = resource_value
@@ -256,11 +324,14 @@ fn parse_state(input: &str) -> crate::Result<Snapshot> {
             let instance = instance_value
                 .as_object()
                 .ok_or_else(|| state_error("each instance must be an object"))?;
-            if instance
-                .get("deposed")
-                .is_some_and(|value| value.as_str().is_some_and(|value| !value.is_empty()))
-            {
-                return Err(state_error("deposed instances are not supported"));
+            let is_deposed = match instance.get("deposed") {
+                None => false,
+                Some(Value::String(key)) if !key.is_empty() => true,
+                Some(_) => return Err(state_error("deposed must be a nonempty string")),
+            };
+            if is_deposed {
+                deposed_instances += 1;
+                continue;
             }
             let index = instance.get("index_key").cloned();
             validate_index(index.as_ref())?;
@@ -281,6 +352,7 @@ fn parse_state(input: &str) -> crate::Result<Snapshot> {
                     name: name.clone(),
                     index: index.clone(),
                     provider_name: provider_name.clone(),
+                    provider_config: provider.clone(),
                     attributes,
                     sensitive_paths,
                 };
@@ -298,6 +370,7 @@ fn parse_state(input: &str) -> crate::Result<Snapshot> {
                 name: name.clone(),
                 index,
                 provider_name: provider_name.clone(),
+                provider_config: provider.clone(),
                 attributes,
                 sensitive_paths,
             };
@@ -311,6 +384,7 @@ fn parse_state(input: &str) -> crate::Result<Snapshot> {
         terraform_version,
         lineage,
         resources,
+        deposed_instances,
     })
 }
 
@@ -487,6 +561,37 @@ fn validate_sensitive_paths(value: &Value, paths: &[Vec<PathSegment>]) -> crate:
         }
     }
     Ok(())
+}
+
+/// Adds the paths of secret-named attributes and access key IDs below `path`.
+fn collect_secret_paths(
+    value: &Value,
+    path: &mut Vec<PathSegment>,
+    paths: &mut Vec<Vec<PathSegment>>,
+) {
+    let secret_key =
+        matches!(path.last(), Some(PathSegment::Key(key)) if crate::secrets::is_secret_key(key));
+    if secret_key && crate::secrets::is_maskable(value) || crate::secrets::is_secret_value(value) {
+        paths.push(path.clone());
+        return;
+    }
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                path.push(PathSegment::Key(key.clone()));
+                collect_secret_paths(child, path, paths);
+                path.pop();
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                path.push(PathSegment::Index(index));
+                collect_secret_paths(child, path, paths);
+                path.pop();
+            }
+        }
+        _ => {}
+    }
 }
 
 fn path_matches(path: &[PathSegment], prefix: &[PathSegment]) -> bool {
@@ -831,11 +936,20 @@ mod tests {
     }
 
     fn resource(name: &str, mode: &str, instances: Value) -> Value {
+        resource_with_provider(
+            name,
+            mode,
+            "provider[\"registry.terraform.io/hashicorp/test\"]",
+            instances,
+        )
+    }
+
+    fn resource_with_provider(name: &str, mode: &str, provider: &str, instances: Value) -> Value {
         json!({
             "mode": mode,
             "type": "test_thing",
             "name": name,
-            "provider": "provider[\"registry.terraform.io/hashicorp/test\"]",
+            "provider": provider,
             "instances": instances
         })
     }
@@ -875,6 +989,72 @@ mod tests {
             .any(|c| c.path == ["nested", "added"]));
         assert!(changed.changes.iter().any(|c| c.path == ["items"]));
         assert!(changed.changes.iter().any(|c| c.path == ["id"]));
+    }
+
+    #[test]
+    fn detects_provider_alias_reassignment() {
+        let provider = "provider[\"registry.terraform.io/hashicorp/test\"]";
+        let before = state(json!([resource_with_provider(
+            "same",
+            "managed",
+            &format!("{provider}.primary"),
+            json!([{"attributes":{"id":"same"}}])
+        )]));
+        let after = state(json!([resource_with_provider(
+            "same",
+            "managed",
+            &format!("{provider}.secondary"),
+            json!([{"attributes":{"id":"same"}}])
+        )]));
+
+        let comparison = compare_states(&before, &after).unwrap();
+
+        assert_eq!(comparison.plan.summary.change, 1);
+        assert!(comparison.plan.resources[0].changes.is_empty());
+        assert!(comparison
+            .plan
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("changed provider configuration")));
+    }
+
+    #[test]
+    fn reports_provider_reassignment_even_when_attributes_are_unchanged() {
+        let before = state(json!([resource_with_provider(
+            "same",
+            "managed",
+            "provider[\"registry.terraform.io/hashicorp/old\"]",
+            json!([{"attributes":{"id":"same","value":"unchanged"}}])
+        )]));
+        let after = state(json!([resource_with_provider(
+            "same",
+            "managed",
+            "provider[\"registry.terraform.io/hashicorp/new\"]",
+            json!([{"attributes":{"id":"same","value":"unchanged"}}])
+        )]));
+
+        let comparison = compare_states(&before, &after).unwrap();
+
+        assert_eq!(comparison.plan.summary.change, 1);
+        assert_eq!(
+            comparison.plan.resources[0].provider,
+            "registry.terraform.io/hashicorp/new"
+        );
+        assert_eq!(comparison.plan.resources[0].changes.len(), 0);
+        assert!(comparison
+            .plan
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("changed provider configuration")));
+        assert_eq!(comparison.export.resource_changes.len(), 1);
+        assert_eq!(
+            comparison.export.resource_changes[0].provider_name,
+            "registry.terraform.io/hashicorp/new"
+        );
+        assert_eq!(
+            comparison.export.resource_changes[0].change.actions,
+            ["update"]
+        );
     }
 
     #[test]
@@ -947,6 +1127,108 @@ mod tests {
             .iter()
             .any(|change| change.sensitive));
         assert!(serialized.contains(SENSITIVE_PLACEHOLDER));
+    }
+
+    fn secret_states() -> (String, String) {
+        let instance = |token: &str, password: &str, key: &str| {
+            json!([{
+                "attributes":{
+                    "name":"acme-app",
+                    "api_token":token,
+                    "minimum_password_length":14,
+                    "env":{"ACME_DB_PASSWORD":password,"REGION":"eu-central-1"},
+                    "access_key":key,
+                    "secret_arn":"arn:aws:secretsmanager:eu-central-1:111122223333:secret:acme"
+                },
+                "sensitive_attributes":[[{"type":"get_attr","value":"name"}]]
+            }])
+        };
+        (
+            state(json!([resource(
+                "acme",
+                "managed",
+                instance("tok-old", "pw-old", "AKIAIOSFODNN7EXAMPLE")
+            )])),
+            state(json!([
+                resource(
+                    "acme",
+                    "managed",
+                    instance("tok-new", "pw-new", "AKIAI44QH8DHBEXAMPLE")
+                ),
+                resource(
+                    "acme_new",
+                    "managed",
+                    instance("tok-created", "pw-created", "AKIAIOSFODNN7EXAMPLE")
+                )
+            ])),
+        )
+    }
+
+    fn serialized(comparison: &StateComparison) -> String {
+        format!(
+            "{}{}",
+            serde_json::to_string(&comparison.plan).unwrap(),
+            serde_json::to_string(&comparison.export).unwrap()
+        )
+    }
+
+    #[test]
+    fn masks_secret_names_and_access_keys_by_default() {
+        let (old, new) = secret_states();
+        let comparison = compare_states_with_options(&old, &new, false).unwrap();
+        let text = serialized(&comparison);
+        for secret in [
+            "tok-old",
+            "tok-new",
+            "tok-created",
+            "pw-old",
+            "pw-new",
+            "pw-created",
+            "AKIAIOSFODNN7EXAMPLE",
+            "AKIAI44QH8DHBEXAMPLE",
+            "acme-app",
+        ] {
+            assert!(!text.contains(secret), "{secret} leaked: {text}");
+        }
+        // References and non-string values next to secrets stay visible.
+        assert!(text.contains("secretsmanager"));
+        assert!(text.contains("eu-central-1"));
+        assert!(text.contains("\"minimum_password_length\":14"));
+        let update = &comparison.plan.resources[0];
+        assert!(update
+            .changes
+            .iter()
+            .any(|change| change.path == ["api_token"] && change.sensitive));
+        let export = &comparison.export.resource_changes[0].change;
+        assert_eq!(export.after_sensitive["api_token"], json!(true));
+        assert_eq!(
+            export.after_sensitive["env"]["ACME_DB_PASSWORD"],
+            json!(true)
+        );
+        assert_eq!(export.after_sensitive["env"]["REGION"], json!(false));
+    }
+
+    #[test]
+    fn raw_secrets_disables_all_masking() {
+        let (old, new) = secret_states();
+        let comparison = compare_states_with_options(&old, &new, true).unwrap();
+        let text = serialized(&comparison);
+        for secret in [
+            "tok-old",
+            "tok-new",
+            "pw-created",
+            "AKIAI44QH8DHBEXAMPLE",
+            "acme-app",
+        ] {
+            assert!(text.contains(secret), "{secret} missing: {text}");
+        }
+        assert!(!text.contains(SENSITIVE_PLACEHOLDER));
+        assert!(comparison
+            .plan
+            .resources
+            .iter()
+            .flat_map(|resource| &resource.changes)
+            .all(|change| !change.sensitive));
     }
 
     #[test]
@@ -1030,6 +1312,52 @@ mod tests {
             json!([{"type":"get_attr","value":1}]),
         ] {
             assert!(parse_sensitive_path(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn ignores_valid_deposed_instances_while_comparing_current_instances() {
+        let older = state(json!([resource(
+            "item",
+            "managed",
+            json!([
+                {"deposed":"deadbeef","attributes":{"id":"old","value":"retired"}},
+                {"attributes":{"id":"current","value":"before"}}
+            ])
+        )]));
+        let later = state(json!([resource(
+            "item",
+            "managed",
+            json!([
+                {"deposed":"cafebabe","attributes":{"id":"old","value":"retired"}},
+                {"attributes":{"id":"current","value":"after"}}
+            ])
+        )]));
+
+        let comparison = compare_states(&older, &later).unwrap();
+
+        assert_eq!(comparison.plan.summary.change, 1);
+        assert_eq!(comparison.plan.resources.len(), 1);
+        assert_eq!(comparison.plan.resources[0].attributes["id"], "current");
+        assert!(comparison
+            .plan
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("Ignored deposed instances")));
+    }
+
+    #[test]
+    fn rejects_malformed_deposed_instance_markers() {
+        for deposed in [json!(true), json!(1), json!(null), json!("")] {
+            let input = state(json!([resource(
+                "item",
+                "managed",
+                json!([{"deposed":deposed,"attributes":{"id":"current"}}])
+            )]));
+            assert!(
+                parse_state(&input).is_err(),
+                "accepted deposed marker {deposed}"
+            );
         }
     }
 

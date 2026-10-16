@@ -73,12 +73,12 @@ pub fn clean_prefixes(input: &str) -> String {
     // Clean up the lines by removing common prefixes and cleaning up formatting
     let lines: Vec<&str> = input.lines().collect();
     let mut cleaned_lines = Vec::new();
+    let prefix_regex = Regex::new(r"^base14-[a-zA-Z0-9-]+\s+").unwrap();
 
     for line in lines {
         let mut cleaned = line.to_string();
 
         // Remove common prefixes like "base14-aws-use1-eks-scout" or similar
-        let prefix_regex = Regex::new(r"^base14-[a-zA-Z0-9-]+\s+").unwrap();
         cleaned = prefix_regex.replace(&cleaned, "").to_string();
 
         // Also handle lines that are indented with spaces but have content

@@ -151,9 +151,9 @@ pub fn parse_resource_changes(lines: &[&str]) -> Vec<Resource> {
 }
 
 lazy_static! {
-    static ref CREATE_REGEX: Regex = Regex::new(r"#\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_\-\.]+(?:_[A-F0-9]+)?)\s+(?:\([^)]+\)\s+)?will be created").unwrap();
-    static ref UPDATE_REGEX: Regex = Regex::new(r"#\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_\-\.]+(?:_[A-F0-9]+)?)\s+(?:\([^)]+\)\s+)?will be (?:updated|updated in-place)").unwrap();
-    static ref DESTROY_REGEX: Regex = Regex::new(r"#\s+([a-zA-Z0-9_]+)\.([a-zA-Z0-9_\-\.]+(?:_[A-F0-9]+)?)\s+(?:\([^)]+\)\s+)?will be destroyed").unwrap();
+    static ref CREATE_REGEX: Regex = Regex::new(r"#\s+((?:module\.[a-zA-Z0-9_\-\.]+\.)*[a-zA-Z0-9_]+\.[a-zA-Z0-9_\-\.]+(?:_[A-F0-9]+)?)\s+(?:\([^)]+\)\s+)?will be created").unwrap();
+    static ref UPDATE_REGEX: Regex = Regex::new(r"#\s+((?:module\.[a-zA-Z0-9_\-\.]+\.)*[a-zA-Z0-9_]+\.[a-zA-Z0-9_\-\.]+(?:_[A-F0-9]+)?)\s+(?:\([^)]+\)\s+)?will be (?:updated|updated in-place)").unwrap();
+    static ref DESTROY_REGEX: Regex = Regex::new(r"#\s+((?:module\.[a-zA-Z0-9_\-\.]+\.)*[a-zA-Z0-9_]+\.[a-zA-Z0-9_\-\.]+(?:_[A-F0-9]+)?)\s+(?:\([^)]+\)\s+)?will be destroyed").unwrap();
     static ref ARROW_CHANGE_REGEX: Regex = Regex::new(r"[~+-]?\s*(.+?)\s*=\s*(.+?)\s*->\s*(.+)").unwrap();
     static ref SIMPLE_ATTR_REGEX: Regex = Regex::new(r"([~+-]?)\s*(.+?)\s*=\s*(.+)").unwrap();
     static ref KNOWN_AFTER_APPLY_REGEX: Regex = Regex::new(r"[~+-]?\s*(.+?)\s*=").unwrap();
@@ -182,19 +182,23 @@ fn parse_resource_action_line(line: &str) -> Option<Resource> {
 }
 
 fn create_resource_from_captures(captures: &regex::Captures, action: ActionType) -> Resource {
-    let resource_type = captures.get(1).map(|m| m.as_str()).unwrap_or("unknown");
-    let resource_name = captures.get(2).map(|m| m.as_str()).unwrap_or("unknown");
-    let resource_id = format!("{}.{}", resource_type, resource_name);
+    let resource_id = captures.get(1).map(|m| m.as_str()).unwrap_or("unknown");
+    let (type_name, name) = resource_id
+        .rsplit_once('.')
+        .unwrap_or(("unknown", resource_id));
 
     Resource {
-        id: resource_id,
-        name: resource_name.to_string(),
-        type_name: resource_type.to_string(),
+        id: resource_id.to_string(),
+        plan_delta: None,
+        name: name.to_string(),
+        type_name: type_name.to_string(),
         provider: "unknown".to_string(),
         action,
         changes: Vec::new(),
         attributes: HashMap::new(),
+        audit_attribution: None,
         applied: false,
+        source: None,
     }
 }
 
@@ -233,13 +237,13 @@ fn parse_attribute_change(line: &str, attributes: &mut HashMap<String, Value>) {
         let attr_value = attr_match.get(3).map(|m| m.as_str().trim()).unwrap_or("");
 
         let formatted_value = match change_type {
-            "+" => format!("+ {}", attr_value),
-            "-" => format!("- {}", attr_value),
-            "~" => format!("~ {}", attr_value),
-            _ => attr_value.to_string(),
+            "+" => parse_terraform_value(attr_value),
+            "-" => parse_terraform_value(attr_value),
+            "~" => Value::String(format!("~ {}", attr_value)),
+            _ => parse_terraform_value(attr_value),
         };
 
-        attributes.insert(attr_name.to_string(), Value::String(formatted_value));
+        attributes.insert(attr_name.to_string(), formatted_value);
     }
 
     // Handle special cases like "(known after apply)"
@@ -274,12 +278,12 @@ fn parse_update_change(line: &str, changes: &mut Vec<Change>) {
     let mut path = Vec::new();
 
     // Remove leading change indicator
-    let (change_type, clean_line) = if line.starts_with("~ ") {
-        ("~", &line[2..])
-    } else if line.starts_with("+ ") {
-        ("+", &line[2..])
-    } else if line.starts_with("- ") {
-        ("-", &line[2..])
+    let (change_type, clean_line) = if let Some(clean_line) = line.strip_prefix("~ ") {
+        ("~", clean_line)
+    } else if let Some(clean_line) = line.strip_prefix("+ ") {
+        ("+", clean_line)
+    } else if let Some(clean_line) = line.strip_prefix("- ") {
+        ("-", clean_line)
     } else {
         ("", line)
     };
@@ -320,11 +324,12 @@ fn parse_update_change(line: &str, changes: &mut Vec<Change>) {
             let value = clean_line[eq_pos + 3..].trim();
 
             path.push(attr_name.to_string());
+            let parsed = parse_terraform_value(value);
 
             let change = Change {
                 path: path.clone(),
                 before: None,
-                after: Some(parse_terraform_value(value)),
+                after: Some(parsed),
                 sensitive: false,
                 computed: value == "(known after apply)",
             };
@@ -361,14 +366,12 @@ fn parse_update_change(line: &str, changes: &mut Vec<Change>) {
 ///   - old_attr = [
 fn detect_multiline_array_start(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim();
-    let (change_type, clean) = if trimmed.starts_with("~ ") {
-        ("~", &trimmed[2..])
-    } else if trimmed.starts_with("+ ") {
-        ("+", &trimmed[2..])
-    } else if trimmed.starts_with("- ") {
-        ("-", &trimmed[2..])
+    let (change_type, clean) = if let Some(clean) = trimmed.strip_prefix("~ ") {
+        ("~", clean)
+    } else if let Some(clean) = trimmed.strip_prefix("+ ") {
+        ("+", clean)
     } else {
-        return None;
+        ("-", trimmed.strip_prefix("- ")?)
     };
 
     if let Some(eq_pos) = clean.find(" = ") {
@@ -415,13 +418,13 @@ fn flush_multiline_array_change(
         }
 
         // Parse removed elements within the array
-        if trimmed.starts_with("- ") {
-            let value = trimmed[2..].trim().trim_end_matches(',');
+        if let Some(value) = trimmed.strip_prefix("- ") {
+            let value = value.trim().trim_end_matches(',');
             removed_elements.push(parse_terraform_value(value));
         }
         // Parse added elements within the array
-        else if trimmed.starts_with("+ ") {
-            let value = trimmed[2..].trim().trim_end_matches(',');
+        else if let Some(value) = trimmed.strip_prefix("+ ") {
+            let value = value.trim().trim_end_matches(',');
             added_elements.push(parse_terraform_value(value));
         }
         // Plain elements (unchanged, shown for context)
@@ -494,8 +497,11 @@ fn flush_multiline_array_change(
     }
 }
 
-fn parse_terraform_value(value_str: &str) -> Value {
+pub(crate) fn parse_terraform_value(value_str: &str) -> Value {
     let trimmed = value_str.trim();
+
+    // Terraform plan creation lines start with an action marker, not part of the value.
+    let trimmed = trimmed.strip_prefix("+ ").unwrap_or(trimmed);
 
     // Remove quotes if present
     let unquoted = if (trimmed.starts_with('"') && trimmed.ends_with('"'))

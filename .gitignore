@@ -54,3 +54,6 @@ perf.data
 
 # Generated files
 *.generated.*
+# Terraform state snapshots (may contain secrets)
+*.tfstate
+*.tfstate.*

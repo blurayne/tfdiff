@@ -1,993 +1,600 @@
-use crate::{ActionType, TerraformPlan};
+use crate::{ActionType, PlanMode, TerraformPlan, WarningLevel};
 use chrono::Local;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub fn format_html_output(plan: &TerraformPlan) -> String {
+    format_html_output_with_options(plan, super::FormatterOptions::default())
+}
+
+pub fn format_html_output_with_options(
+    plan: &TerraformPlan,
+    options: super::FormatterOptions,
+) -> String {
+    format!(
+        "{}{}\n</main>\n</body>\n</html>",
+        html_document_start("Terraform changes"),
+        render_html_fragment_with_options(plan, options)
+    )
+}
+
+pub fn render_html_fragment(plan: &TerraformPlan) -> String {
+    render_html_fragment_with_options(plan, super::FormatterOptions::default())
+}
+
+pub fn render_html_fragment_with_options(
+    plan: &TerraformPlan,
+    options: super::FormatterOptions,
+) -> String {
+    render_html_fragment_with_moves(plan, options, None)
+}
+
+/// Like [`render_html_fragment_with_options`], but resources whose address is a key in
+/// `moves` get a `MOVED` badge and the map value as a note.
+pub fn render_html_fragment_with_moves(
+    plan: &TerraformPlan,
+    options: super::FormatterOptions,
+    moves: Option<&std::collections::HashMap<String, String>>,
+) -> String {
     let mut html = String::new();
 
-    // HTML header - exactly matching the sample
-    html.push_str(r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Terraform Plan - Infrastructure</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
-            background-color: #0d1117;
-            color: #c9d1d9;
-            line-height: 1.6;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        
-        /* Header Section */
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-            padding: 20px;
-            background: linear-gradient(135deg, #1e3a5f 0%, #0d1117 100%);
-            border-radius: 12px;
-            border: 1px solid #30363d;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .header::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: linear-gradient(45deg, transparent, rgba(88, 166, 255, 0.1), transparent);
-            transform: rotate(45deg);
-            animation: shimmer 3s linear infinite;
-        }
-        
-        @keyframes shimmer {
-            0% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
-            100% { transform: translateX(100%) translateY(100%) rotate(45deg); }
-        }
-        
-        .header h1 {
-            color: #58a6ff;
-            font-size: 28px;
-            margin-bottom: 10px;
-            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-            position: relative;
-            z-index: 1;
-        }
-        
-        .header .subtitle {
-            color: #8b949e;
-            font-size: 14px;
-            position: relative;
-            z-index: 1;
-        }
-        
-        .timestamp {
-            color: #6e7681;
-            font-size: 12px;
-            margin-top: 10px;
-            position: relative;
-            z-index: 1;
-        }
-        
-        /* Summary Card */
-        .summary-card {
-            background-color: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 12px;
-            padding: 30px;
-            margin-bottom: 30px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        
-        .summary-title {
-            color: #58a6ff;
-            font-size: 20px;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .summary-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-        }
-        
-        .stat-box {
-            background-color: #0d1117;
-            border: 1px solid #30363d;
-            border-radius: 8px;
-            padding: 20px;
-            text-align: center;
-            transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .stat-box::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 3px;
-            background: currentColor;
-            transform: scaleX(0);
-            transition: transform 0.3s ease;
-        }
-        
-        .stat-box:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
-        }
-        
-        .stat-box:hover::before {
-            transform: scaleX(1);
-        }
-        
-        .stat-icon {
-            font-size: 32px;
-            margin-bottom: 10px;
-        }
-        
-        .stat-number {
-            font-size: 36px;
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-        
-        .stat-label {
-            font-size: 14px;
-            color: #8b949e;
-        }
-        
-        .add { color: #3fb950; }
-        .add .stat-number { color: #3fb950; }
-        
-        .change { color: #d29922; }
-        .change .stat-number { color: #d29922; }
-        
-        .destroy { color: #f85149; }
-        .destroy .stat-number { color: #f85149; }
-        
-        .read { color: #58a6ff; }
-        .read .stat-number { color: #58a6ff; }
-        
-        /* Resource Sections */
-        .resource-section {
-            background-color: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 12px;
-            margin-bottom: 20px;
-            overflow: hidden;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            transition: box-shadow 0.3s ease;
-        }
-        
-        .resource-section:hover {
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-        }
-        
-        .resource-header {
-            background-color: #21262d;
-            padding: 20px;
-            border-bottom: 1px solid #30363d;
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-        
-        .action-badge {
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: bold;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-        }
-        
-        .action-create { 
-            background-color: #3fb950; 
-            color: #0d1117;
-            animation: pulse-green 2s infinite;
-        }
-        
-        @keyframes pulse-green {
-            0%, 100% { box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); }
-            50% { box-shadow: 0 2px 8px rgba(63, 185, 80, 0.4); }
-        }
-        
-        .action-update { background-color: #d29922; color: #0d1117; }
-        .action-destroy { background-color: #f85149; color: #ffffff; }
-        .action-read { background-color: #58a6ff; color: #0d1117; }
-        
-        .resource-name {
-            color: #f0f6fc;
-            font-size: 16px;
-            font-weight: 600;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-        }
-        
-        .resource-id {
-            color: #8b949e;
-            font-size: 14px;
-            margin-left: auto;
-        }
-        
-        /* Diff Container */
-        .diff-container {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 2px;
-            background-color: #30363d;
-        }
-        
-        .diff-side {
-            background-color: #0d1117;
-            padding: 20px;
-            overflow-x: auto;
-        }
-        
-        .diff-side.single {
-            grid-column: 1 / -1;
-        }
-        
-        .diff-header {
-            color: #58a6ff;
-            font-size: 12px;
-            font-weight: bold;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 1px solid #30363d;
-        }
-        
-        .diff-content {
-            font-size: 13px;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            line-height: 1.8;
-        }
-        
-        .line {
-            padding: 2px 0;
-            margin: 2px 0;
-            transition: background-color 0.2s ease;
-        }
-        
-        .line.add {
-            background-color: rgba(63, 185, 80, 0.1);
-            color: #3fb950;
-            padding-left: 20px;
-            position: relative;
-            border-left: 3px solid #3fb950;
-        }
-        
-        .line.add::before {
-            content: '+';
-            position: absolute;
-            left: 5px;
-            font-weight: bold;
-        }
-        
-        .line.remove {
-            background-color: rgba(248, 81, 73, 0.1);
-            color: #f85149;
-            padding-left: 20px;
-            position: relative;
-            border-left: 3px solid #f85149;
-        }
-        
-        .line.remove::before {
-            content: '-';
-            position: absolute;
-            left: 5px;
-            font-weight: bold;
-        }
-        
-        .line.unchanged {
-            color: #8b949e;
-            font-style: italic;
-        }
-        
-        .attribute {
-            color: #79c0ff;
-            font-weight: 600;
-        }
-        
-        .value {
-            color: #a5d6ff;
-        }
-        
-        .string-value {
-            color: #79c0ff;
-        }
-        
-        /* Special Resource Highlight */
-        .new-resource {
-            position: relative;
-        }
-        
-        .new-resource::before {
-            content: 'NEW';
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            background-color: #3fb950;
-            color: #0d1117;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 10px;
-            font-weight: bold;
-            letter-spacing: 1px;
-            animation: blink 2s infinite;
-        }
-        
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
-        }
-        
-        /* Warnings Section */
-        .warnings-section {
-            background-color: #161b22;
-            border: 1px solid #8b5a00;
-            border-radius: 12px;
-            padding: 20px;
-            margin-top: 30px;
-        }
-        
-        .warnings-header {
-            color: #d29922;
-            font-size: 18px;
-            margin-bottom: 15px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .warning-item {
-            background-color: rgba(210, 153, 34, 0.1);
-            border-left: 3px solid #d29922;
-            padding: 15px;
-            margin-bottom: 10px;
-            border-radius: 4px;
-        }
-        
-        .warning-title {
-            color: #d29922;
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-        
-        .warning-text {
-            color: #c9d1d9;
-            font-size: 13px;
-        }
-        
-        /* Code block styling */
-        .code-block {
-            background-color: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 15px;
-            margin: 10px 0;
-            overflow-x: auto;
-        }
-        
-        @media (max-width: 768px) {
-            .diff-container {
-                grid-template-columns: 1fr;
-            }
-            
-            .summary-grid {
-                grid-template-columns: 1fr 1fr;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">"#);
-
-    // Header with shimmer effect
-    let (title, subtitle) = if plan.mode == crate::PlanMode::StateDiff {
-        (
+    let (title, subtitle) = match plan.mode {
+        PlanMode::StateDiff => (
             "Terraform State Snapshot Diff",
             "Observed differences between two state snapshots; actions are not predictions.",
-        )
-    } else {
-        ("Terraform Plan Analysis", "Infrastructure changes")
+        ),
+        PlanMode::PlanDiff => (
+            "Terraform Plan Diff",
+            "Differences between two Terraform plan reports.",
+        ),
+        _ => ("Terraform Plan Analysis", "Infrastructure changes"),
     };
     let timestamp = Local::now().format("%B %d, %Y").to_string();
     html.push_str(&format!(
-        r#"
-        <div class="header">
-            <h1>{}</h1>
-            <div class="subtitle">{}</div>
-            <div class="timestamp">Generated on {}</div>
-        </div>"#,
+        "<header><h1>{}</h1><p class=\"subtitle\">{}</p><p class=\"timestamp\">Generated on {}</p></header>",
         html_escape(title),
         html_escape(subtitle),
         html_escape(&timestamp)
     ));
 
-    // Summary Card
-    html.push_str(&format!(
-        r#"
-        <div class="summary-card">
-            <div class="summary-title">
-                <span>📊</span>
-                <span>{}</span>
-            </div>
-            <div class="summary-grid">"#,
-        if plan.mode == crate::PlanMode::StateDiff {
-            "Observed Differences"
-        } else {
-            "Plan Summary"
+    if let Some(attribution) = &plan.author_attribution {
+        html.push_str("<section class=\"audit-attribution\" aria-label=\"CloudTrail attribution\"><h2>Observed resource actors</h2>");
+        html.push_str(&format!(
+            "<p>Audit window: <code>{}</code>–<code>{}</code> | Regions: {} | Status: {}</p>",
+            html_escape(&attribution.window_start),
+            html_escape(&attribution.window_end),
+            html_escape(&attribution.regions.join(", ")),
+            html_escape(&format!("{:?}", attribution.status)),
+        ));
+        if let Some(message) = &attribution.message {
+            html.push_str(&format!("<p>{}</p>", html_escape(message)));
         }
+        if !attribution.observations.is_empty() {
+            html.push_str("<ul>");
+            for observation in &attribution.observations {
+                let principal = observation
+                    .principal_arn
+                    .as_deref()
+                    .or(observation.principal_id.as_deref())
+                    .unwrap_or("unknown principal");
+                html.push_str(&format!(
+                    "<li><code>{}</code> — {} <code>{}</code> at <time>{}</time> ({})</li>",
+                    html_escape(principal),
+                    html_escape(&observation.event_name),
+                    html_escape(&observation.event_id),
+                    html_escape(&observation.event_time),
+                    html_escape(&observation.match_basis),
+                ));
+                if let Some(agent) = &observation.user_agent {
+                    html.push_str(&format!(
+                        "<p>Event userAgent: <code>{}</code></p>",
+                        html_escape(agent)
+                    ));
+                }
+            }
+            html.push_str("</ul>");
+        }
+        html.push_str("</section>");
+    }
+
+    if let Some(versions) = &plan.source_versions {
+        html.push_str("<section class=\"source-versions\" aria-label=\"Source versions\">");
+        for (label, version) in [
+            (&versions.left_label, versions.left.as_ref()),
+            (&versions.right_label, versions.right.as_ref()),
+        ] {
+            if let Some(version) = version {
+                html.push_str(&format!(
+                    "<div class=\"source-version\"><strong>{}</strong><code>{}</code>{}</div>",
+                    html_escape(label),
+                    html_escape(version.version_id.as_deref().unwrap_or("unknown")),
+                    version
+                        .last_modified
+                        .as_deref()
+                        .map(|timestamp| format!("<time>{}</time>", html_escape(timestamp)))
+                        .unwrap_or_default(),
+                ));
+            }
+        }
+        html.push_str("</section>");
+    }
+
+    let summary_title = match plan.mode {
+        PlanMode::StateDiff => "Observed Differences",
+        PlanMode::PlanDiff => "Plan Report Differences",
+        _ => "Plan Summary",
+    };
+    html.push_str(&format!(
+        "<section class=\"summary\" aria-label=\"{}\">",
+        summary_title
     ));
-
-    if plan.summary.add > 0 {
-        html.push_str(&format!(
-            r#"
-                <div class="stat-box add">
-                    <div class="stat-icon">➕</div>
-                    <div class="stat-number">{}</div>
-                    <div class="stat-label">to add</div>
-                </div>"#,
-            plan.summary.add
-        ));
-    }
-
-    if plan.summary.change > 0 {
-        html.push_str(&format!(
-            r#"
-                <div class="stat-box change">
-                    <div class="stat-icon">🔄</div>
-                    <div class="stat-number">{}</div>
-                    <div class="stat-label">to change</div>
-                </div>"#,
-            plan.summary.change
-        ));
-    }
-
-    if plan.summary.destroy > 0 {
-        html.push_str(&format!(
-            r#"
-                <div class="stat-box destroy">
-                    <div class="stat-icon">🗑️</div>
-                    <div class="stat-number">{}</div>
-                    <div class="stat-label">to destroy</div>
-                </div>"#,
-            plan.summary.destroy
-        ));
-    }
-
+    let (add_label, change_label, destroy_label) = match plan.mode {
+        PlanMode::StateDiff => ("added", "changed", "removed"),
+        PlanMode::PlanDiff => (
+            "added to report",
+            "changed in report",
+            "removed from report",
+        ),
+        _ => ("to add", "to change", "to destroy"),
+    };
+    push_summary_item(&mut html, plan.summary.add, add_label, "add-text");
+    push_summary_item(&mut html, plan.summary.change, change_label, "change-text");
+    push_summary_item(
+        &mut html,
+        plan.summary.destroy,
+        destroy_label,
+        "destroy-text",
+    );
     if plan.summary.read > 0 || !plan.data_sources.is_empty() {
-        let read_count = if plan.summary.read > 0 {
+        let count = if plan.summary.read > 0 {
             plan.summary.read
         } else {
             plan.data_sources.len()
         };
-        html.push_str(&format!(
-            r#"
-                <div class="stat-box read">
-                    <div class="stat-icon">📖</div>
-                    <div class="stat-number">{}</div>
-                    <div class="stat-label">data source{} to read</div>
-                </div>"#,
-            read_count,
-            if read_count == 1 { "" } else { "s" }
-        ));
-    }
-
-    html.push_str(
-        r#"
-            </div>
-        </div>"#,
-    );
-
-    // Resources
-    for resource in &plan.resources {
-        let (action_class, action_text) = match resource.action {
-            ActionType::Create => ("action-create", "CREATE"),
-            ActionType::Update => ("action-update", "UPDATE"),
-            ActionType::Destroy => ("action-destroy", "DESTROY"),
-            ActionType::Read => ("action-read", "READ"),
-            ActionType::NoOp => ("action-read", "NO-OP"),
-        };
-
-        let new_resource_class = if resource.action == ActionType::Create {
-            " new-resource"
+        let read_label = if plan.mode == PlanMode::StateDiff {
+            "read"
         } else {
-            ""
+            "to read"
         };
+        push_summary_item(&mut html, count, read_label, "read-text");
+    }
+    html.push_str("</section>");
 
+    for resource in &plan.resources {
+        let (action_class, action_text) = action_label(&resource.action);
+        let (action_class, action_text) = match (&plan.mode, &resource.plan_delta) {
+            (PlanMode::PlanDiff, Some(delta)) => match delta {
+                crate::PlanDelta::Added => ("action-create", "ADDED TO REPORT"),
+                crate::PlanDelta::Changed => ("action-update", "CHANGED IN REPORT"),
+                crate::PlanDelta::Removed => ("action-destroy", "REMOVED FROM REPORT"),
+            },
+            _ => (action_class, action_text),
+        };
         html.push_str(&format!(
-            r#"
-        <div class="resource-section{}">
-            <div class="resource-header">
-                <span class="action-badge {}">{}</span>
-                <span class="resource-name">{}</span>"#,
-            new_resource_class,
+            "<section class=\"resource-section\"><header class=\"resource-header\"><span class=\"action-badge {}\">{}</span><h2 class=\"resource-name\">{}</h2>",
             action_class,
             action_text,
             html_escape(&resource.id)
         ));
-
-        // Add resource ID if it's an update
-        if resource.action == ActionType::Update && !resource.attributes.is_empty() {
-            if let Some(id_value) = resource.attributes.get("id") {
-                if let Value::String(id_str) = id_value {
-                    html.push_str(&format!(
-                        r#"
-                <span class="resource-id">id: {}</span>"#,
-                        html_escape(id_str)
-                    ));
-                }
+        let moved = moves.and_then(|moves| moves.get(&resource.id));
+        if moved.is_some() {
+            html.push_str("<span class=\"action-badge action-moved\">MOVED</span>");
+        }
+        if options.show_resource_identity
+            && matches!(
+                resource.action,
+                ActionType::Create | ActionType::Update | ActionType::Destroy
+            )
+        {
+            if let Some((key, value)) = super::resource_identity(resource) {
+                html.push_str(&format!(
+                    "<span class=\"muted\">{}: {}</span>",
+                    html_escape(key),
+                    html_escape(&value)
+                ));
             }
         }
-
-        html.push_str(
-            r#"
-            </div>"#,
-        );
-
-        // Format resource content based on action type
-        match resource.action {
-            ActionType::Update => {
-                // For updates, show side-by-side diff
-                html.push_str(&format_update_diff(resource, &plan.mode));
-            }
-            _ => {
-                // For create/destroy/read, show single column
-                html.push_str(&format_single_column(resource));
-            }
-        }
-
-        html.push_str(
-            r#"
-        </div>"#,
-        );
-    }
-
-    // Data Sources
-    for data_source in &plan.data_sources {
-        html.push_str(&format!(
-            r#"
-        <div class="resource-section">
-            <div class="resource-header">
-                <span class="action-badge action-read">READ</span>
-                <span class="resource-name">{}</span>
-            </div>"#,
-            data_source.id
-        ));
-
-        html.push_str(
-            r#"
-            <div class="diff-container">
-                <div class="diff-side single">
-                    <div class="diff-content">"#,
-        );
-
-        // Handle data source attributes
-        for (key, value) in &data_source.attributes {
-            html.push_str(&format_attribute_line(key, value, LineType::Add));
-        }
-
-        html.push_str(
-            r#"</div>
-                </div>
-            </div>
-        </div>"#,
-        );
-    }
-
-    // Warnings Section
-    if !plan.warnings.is_empty() {
-        html.push_str(
-            r#"
-        <div class="warnings-section">
-            <div class="warnings-header">
-                <span>⚠️</span>
-                <span>Warnings</span>
-            </div>"#,
-        );
-
-        for warning in &plan.warnings {
+        html.push_str("</header>");
+        if let Some(note) = moved {
             html.push_str(&format!(
-                r#"
-            <div class="warning-item">
-                <div class="warning-title">Warning</div>
-                <div class="warning-text">{}</div>
-            </div>"#,
-                html_escape(&warning.message)
+                "<div class=\"resource-source moved-note\">{}</div>",
+                html_escape(note)
+            ));
+        }
+        if let Some(source) = &resource.source {
+            html.push_str(&format!(
+                "<div class=\"resource-source\">Source: <code>{}</code></div>",
+                html_escape(source)
             ));
         }
 
-        html.push_str(
-            r#"
-        </div>"#,
-        );
+        if let Some(attribution) = &resource.audit_attribution {
+            if !attribution.observations.is_empty() {
+                html.push_str(&format!(
+                    "<section class=\"resource-audit-attribution\" aria-label=\"Resource audit attribution\"><h3>Audit attribution: {}</h3><ul>",
+                    html_escape(&format!("{:?}", attribution.status))
+                ));
+                for observation in &attribution.observations {
+                    let principal = observation
+                        .principal_arn
+                        .as_deref()
+                        .or(observation.principal_id.as_deref())
+                        .unwrap_or("unknown principal");
+                    html.push_str(&format!(
+                        "<li><code>{}</code> — {} <code>{}</code> at <time>{}</time> (match basis: {})",
+                        html_escape(principal),
+                        html_escape(&observation.event_name),
+                        html_escape(&observation.event_id),
+                        html_escape(&observation.event_time),
+                        html_escape(&observation.match_basis),
+                    ));
+                    if let Some(session_label) = &observation.session_label {
+                        html.push_str(&format!(
+                            "<p>Session: <code>{}</code></p>",
+                            html_escape(session_label)
+                        ));
+                    }
+                    if let Some(client_hint) = &observation.client_hint {
+                        html.push_str(&format!(
+                            "<p>Client: <code>{}</code></p>",
+                            html_escape(client_hint)
+                        ));
+                    }
+                    html.push_str("</li>");
+                }
+                html.push_str("</ul></section>");
+            }
+        }
+
+        if !resource.changes.is_empty() {
+            html.push_str(&render_changes(&resource.changes, &plan.mode));
+        } else if resource.action == ActionType::Update {
+            html.push_str(&render_fallback_diff(resource, &plan.mode));
+        } else {
+            let side = match resource.action {
+                ActionType::Destroy => ChangeSide::Before,
+                _ => ChangeSide::After,
+            };
+            html.push_str(&render_attributes(&resource.attributes, side));
+        }
+        html.push_str("</section>");
     }
 
-    html.push_str(
-        r#"
-    </div>
-</body>
-</html>"#,
+    for data_source in &plan.data_sources {
+        html.push_str(&format!(
+            "<section class=\"resource-section\"><header class=\"resource-header\"><span class=\"action-badge action-read\">READ</span><h2 class=\"resource-name\">{}</h2></header>",
+            html_escape(&data_source.id)
+        ));
+        html.push_str(&render_attributes(
+            &data_source.attributes,
+            ChangeSide::After,
+        ));
+        html.push_str("</section>");
+    }
+
+    if !plan.warnings.is_empty() {
+        html.push_str("<section class=\"warnings\"><h2>Warnings</h2>");
+        for warning in &plan.warnings {
+            let level = match &warning.level {
+                WarningLevel::Info => "Info",
+                WarningLevel::Warning => "Warning",
+                WarningLevel::Error => "Error",
+            };
+            html.push_str(&format!(
+                "<p class=\"warning\"><strong>{}:</strong> {}</p>",
+                level,
+                html_escape(&warning.message)
+            ));
+        }
+        html.push_str("</section>");
+    }
+    html
+}
+
+pub(crate) fn html_document_start(title: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{}</title>
+    <style>
+        :root {{ color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #24292f; background: #fff; }}
+        * {{ box-sizing: border-box; }}
+        body {{ margin: 0; line-height: 1.5; }}
+        main {{ max-width: 1100px; margin: 0 auto; padding: 24px; }}
+        h1 {{ margin: 0; font-size: 1.6rem; }}
+        h2 {{ margin: 0; font-size: 1.05rem; }}
+        .subtitle, .timestamp, .muted {{ color: #57606a; }}
+        .timestamp {{ margin-top: 4px; font-size: .875rem; }}
+        .summary {{ display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 20px 0; padding: 12px 0; border-block: 1px solid #d0d7de; }}
+        .summary-item {{ white-space: nowrap; }} .count {{ font-weight: 700; }}
+        .add-text {{ color: #1a7f37; }} .change-text {{ color: #9a6700; }} .destroy-text {{ color: #cf222e; }} .read-text {{ color: #0969da; }}
+        .resource-section {{ margin: 16px 0; border: 1px solid #d0d7de; border-radius: 6px; }}
+        .resource-header {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; background: #f6f8fa; border-bottom: 1px solid #d0d7de; }}
+        .source-versions {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 20px 0; }}
+        .audit-attribution {{ margin: 20px 0; padding: 12px 16px; border: 1px solid #d0d7de; border-radius: 6px; }} .audit-attribution code {{ overflow-wrap: anywhere; }}
+        .source-version {{ padding: 12px 16px; border: 1px solid #d0d7de; border-radius: 6px; }}
+        .source-version strong, .source-version code, .source-version time {{ display: block; }} .source-version code {{ overflow-wrap: anywhere; }} .source-version time {{ color: #57606a; font-size: .875rem; }}
+        .resource-source {{ padding: 6px 16px; color: #57606a; font-size: .875rem; overflow-wrap: anywhere; }} .compact-warning {{ margin: 16px 0; padding: 12px 16px; border-left: 3px solid #bf8700; background: #fff8c5; }} .compact-sources h3 {{ margin: 12px 0 4px; font-size: .95rem; }}
+        .resource-name {{ overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }}
+        .action-badge {{ padding: 2px 7px; border: 1px solid currentColor; border-radius: 12px; font-size: .75rem; font-weight: 700; }}
+        .action-create {{ color: #1a7f37; }} .action-update {{ color: #9a6700; }} .action-destroy {{ color: #cf222e; }} .action-read {{ color: #0969da; }} .action-moved {{ color: #7d4e00; background: #fff8c5; }} .moved-note {{ color: #7d4e00; }}
+        .diff-container {{ overflow-x: auto; }} table {{ width: 100%; border-collapse: collapse; table-layout: fixed; }}
+        th, td {{ padding: 8px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid #d8dee4; }} th {{ color: #57606a; background: #fff; font-size: .8rem; font-weight: 600; }} tr:last-child td {{ border-bottom: 0; }}
+        td.path {{ width: 22%; color: #57606a; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }} td.value {{ overflow-wrap: anywhere; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }}
+        .row-add td.after {{ background: #dafbe1; }} .row-remove td.before, .row-change td.before {{ background: #ffebe9; }} .row-change td.after {{ background: #dafbe1; }} .empty {{ color: #8c959f; }}
+        .single-column {{ margin: 0; padding: 0; list-style: none; }} .single-column li {{ display: grid; grid-template-columns: minmax(140px, 22%) 1fr; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #d8dee4; }} .single-column li:last-child {{ border-bottom: 0; }}
+        .attribute {{ color: #57606a; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }} .attribute-value {{ overflow-wrap: anywhere; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }}
+        .warnings {{ margin-top: 24px; padding: 12px 16px; border-left: 3px solid #bf8700; background: #fff8c5; }} .warnings h2 {{ margin-bottom: 8px; }} .warning {{ margin: 6px 0; }}
+        .batch-summary {{ margin: 16px 0; padding: 12px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; }} .batch-event {{ margin: 12px 0; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden; }} .batch-event summary {{ cursor: pointer; padding: 12px; background: #f6f8fa; font-weight: 600; }} .batch-meta {{ padding: 12px 16px; color: #57606a; font-size: .9rem; }} .batch-diff {{ padding: 0 16px 16px; }} .batch-inventory {{ width: 100%; border-collapse: collapse; }} .batch-inventory td, .batch-inventory th {{ text-align: left; padding: 8px; border-bottom: 1px solid #d0d7de; overflow-wrap: anywhere; }} .batch-error {{ color: #cf222e; }} .batch-event .source-versions {{ margin: 8px 0; }} .batch-event > header {{ display: none; }}
+        @media (max-width: 768px) {{ main {{ padding: 16px; }} .diff-container {{ overflow: visible; }} table, tbody, tr, td {{ display: block; width: 100%; }} thead {{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }} tr {{ display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid #d8dee4; }} tr:last-child {{ border-bottom: 0; }} td.path {{ grid-column: 1 / -1; width: auto; padding-bottom: 2px; border-bottom: 0; }} td.value {{ min-width: 0; }} td.before::before, td.after::before {{ display: block; margin-bottom: 4px; color: #57606a; font: 600 .75rem system-ui, sans-serif; content: attr(data-label); }} .single-column li {{ grid-template-columns: 1fr; gap: 2px; }} .batch-inventory th:nth-child(2), .batch-inventory td:nth-child(2) {{ display: none; }} }}
+    </style>
+</head>
+<body>
+<main>"#,
+        html_escape(title)
+    )
+}
+
+fn push_summary_item(html: &mut String, count: usize, label: &str, class: &str) {
+    if count > 0 {
+        html.push_str(&format!(
+            "<span class=\"summary-item {}\"><span class=\"count\">{count}</span> {}</span>",
+            class,
+            html_escape(label)
+        ));
+    }
+}
+
+fn action_label(action: &ActionType) -> (&'static str, &'static str) {
+    match action {
+        ActionType::Create => ("action-create", "CREATE"),
+        ActionType::Update => ("action-update", "UPDATE"),
+        ActionType::Destroy => ("action-destroy", "DESTROY"),
+        ActionType::Read => ("action-read", "READ"),
+        ActionType::NoOp => ("action-read", "NO-OP"),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ChangeSide {
+    Before,
+    After,
+}
+
+pub(crate) fn render_changes(changes: &[crate::Change], mode: &PlanMode) -> String {
+    let (before_label, after_label) = column_labels(mode);
+    let mut html = format!(
+        "<div class=\"diff-container\"><table><thead><tr><th scope=\"col\">Attribute</th><th scope=\"col\">{}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
+        html_escape(before_label),
+        html_escape(after_label)
     );
 
-    html
-}
-
-enum LineType {
-    Add,
-    Remove,
-    Unchanged,
-}
-
-fn format_update_diff(resource: &crate::Resource, mode: &crate::PlanMode) -> String {
-    let mut html = String::new();
-
-    // If we have changes, show them in side-by-side format
-    if !resource.changes.is_empty() {
-        // Group changes for before/after display
-        let mut before_lines = Vec::new();
-        let mut after_lines = Vec::new();
-
-        for change in &resource.changes {
-            let path = change.path.join(".");
-
-            match (&change.before, &change.after) {
-                (_, _) if change.sensitive => {
-                    let changed = change.before.is_some() && change.after.is_some();
-                    let value = if changed {
-                        "(sensitive value changed)"
-                    } else {
-                        "(sensitive value)"
-                    };
-                    let line = format!(
-                        r#"<span class="line remove">    <span class="attribute">{}</span> = {value}</span>"#,
-                        html_escape(&path)
-                    );
-                    if change.before.is_some() {
-                        before_lines.push(line.clone());
-                    }
-                    if change.after.is_some() {
-                        after_lines.push(line.replace("line remove", "line add"));
-                    }
-                }
-                (Some(before), Some(after)) if before != after => {
-                    // Changed value
-                    if change.sensitive {
-                        before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = (sensitive value)</span>"#, html_escape(&path)));
-                        after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = (sensitive value)</span>"#, html_escape(&path)));
-                    } else {
-                        before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
-                            html_escape(&path), format_value(before, false)));
-                        after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
-                            html_escape(&path), format_value(after, false)));
-                    }
-                }
-                (None, Some(after)) => {
-                    after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
-                        html_escape(&path), if change.sensitive { "(sensitive value)".to_string() } else { format_value(after, false) }));
-                }
-                (Some(before), None) => {
-                    before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
-                        html_escape(&path), if change.sensitive { "(sensitive value)".to_string() } else { format_value(before, false) }));
-                }
-                _ => {
-                    // Unchanged or computed
-                    if change.computed {
-                        let line = format!(
-                            r#"<span class="line unchanged">    <span class="attribute">{}</span> = <span class="value">(known after apply)</span></span>"#,
-                            html_escape(&path)
-                        );
-                        before_lines.push(line.clone());
-                        after_lines.push(line);
-                    }
-                }
-            }
-        }
-
-        html.push_str(&format!(
-            r#"
-            <div class="diff-container">
-                <div class="diff-side">
-                    <div class="diff-header">{}</div>
-                    <div class="diff-content">"#,
-            html_escape(if *mode == crate::PlanMode::StateDiff {
-                "Older Snapshot"
-            } else {
-                "Current State"
-            })
-        ));
-
-        if before_lines.is_empty() {
-            html.push_str(r#"<span class="line unchanged">    # (no previous state)</span>"#);
+    for change in changes {
+        let path = change.path.join(".");
+        let row_class = if change.sensitive {
+            "row-change"
         } else {
-            for line in before_lines {
-                html.push_str(&line);
-                html.push('\n');
+            match (change.before.is_some(), change.after.is_some()) {
+                (true, true) => "row-change",
+                (true, false) => "row-remove",
+                (false, true) => "row-add",
+                (false, false) => "row-unchanged",
             }
-        }
-
-        html.push_str(&format!(
-            r#"</div>
-                </div>
-                <div class="diff-side">
-                    <div class="diff-header">{}</div>
-                    <div class="diff-content">"#,
-            html_escape(if *mode == crate::PlanMode::StateDiff {
-                "Later Snapshot"
+        };
+        let (before, after) = if change.sensitive {
+            let marker = if change.before.is_some() && change.after.is_some() {
+                "(sensitive value changed)"
             } else {
-                "After Apply"
-            })
+                "(sensitive value)"
+            };
+            (
+                change.before.as_ref().map(|_| marker.to_string()),
+                change.after.as_ref().map(|_| marker.to_string()),
+            )
+        } else if change.computed {
+            (
+                change
+                    .before
+                    .as_ref()
+                    .map(|value| format_value(value, true)),
+                Some("(known after apply)".to_string()),
+            )
+        } else {
+            (
+                change
+                    .before
+                    .as_ref()
+                    .map(|value| format_value(value, true)),
+                change.after.as_ref().map(|value| format_value(value, true)),
+            )
+        };
+        html.push_str(&format!(
+            "<tr class=\"{row_class}\"><td class=\"path\">{}</td>{}{}</tr>",
+            html_escape(&path),
+            value_cell("before", before_label, before.as_deref()),
+            value_cell("after", after_label, after.as_deref())
         ));
-
-        for line in after_lines {
-            html.push_str(&line);
-            html.push('\n');
-        }
-
-        html.push_str(
-            r#"</div>
-                </div>
-            </div>"#,
-        );
-    } else if !resource.attributes.is_empty() {
-        // Fallback to parsing attributes for side-by-side display
-        html.push_str(&format_attributes_as_diff(resource, mode));
     }
-
+    html.push_str("</tbody></table></div>");
     html
 }
 
-fn format_attributes_as_diff(resource: &crate::Resource, mode: &crate::PlanMode) -> String {
-    let mut html = String::new();
-    let mut before_lines = Vec::new();
-    let mut after_lines = Vec::new();
+fn column_labels(mode: &PlanMode) -> (&'static str, &'static str) {
+    match mode {
+        PlanMode::StateDiff => ("Older Snapshot", "Later Snapshot"),
+        PlanMode::PlanDiff => ("Earlier Plan Report", "Later Plan Report"),
+        _ => ("Current State", "After Apply"),
+    }
+}
 
-    // Parse attributes and convert arrow notation to side-by-side
-    for (key, value) in &resource.attributes {
-        if let Value::String(val_str) = value {
-            // Check for arrow notation (old → new)
-            if val_str.contains(" → ") {
-                let parts: Vec<&str> = val_str.splitn(2, " → ").collect();
-                if parts.len() == 2 {
-                    before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
-                        html_escape(key), format_value(&json!(parts[0]), true)));
-                    after_lines.push(format!(r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
-                        html_escape(key), format_value(&json!(parts[1]), true)));
-                    continue;
+fn value_cell(class: &str, label: &str, value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!(
+            "<td class=\"value {class}\" data-label=\"{}\">{value}</td>",
+            html_escape(label)
+        ),
+        None => format!(
+            "<td class=\"value {class} empty\" data-label=\"{}\" aria-label=\"No value\">—</td>",
+            html_escape(label)
+        ),
+    }
+}
+
+fn render_fallback_diff(resource: &crate::Resource, mode: &PlanMode) -> String {
+    let mut attributes: Vec<_> = resource.attributes.iter().collect();
+    attributes.sort_by(|left, right| left.0.cmp(right.0));
+    let changes: Vec<_> = attributes
+        .into_iter()
+        .map(|(key, value)| {
+            let (before, after) = match value {
+                Value::String(text) if text.contains(" → ") => {
+                    let (before, after) = text.split_once(" → ").unwrap();
+                    (
+                        Some(raw_fallback_value(before)),
+                        Some(raw_fallback_value(after)),
+                    )
                 }
+                Value::String(text) if text.starts_with("+ ") => {
+                    (None, Some(raw_fallback_value(&text[2..])))
+                }
+                Value::String(text) if text.starts_with("- ") => {
+                    (Some(raw_fallback_value(&text[2..])), None)
+                }
+                Value::String(text) if text.starts_with("~ ") => {
+                    (None, Some(raw_fallback_value(&text[2..])))
+                }
+                value => {
+                    let rendered = format_value(value, true);
+                    (Some(rendered.clone()), Some(rendered))
+                }
+            };
+            FallbackRow {
+                path: key,
+                before,
+                after,
             }
-            // Check for addition prefix
-            else if val_str.starts_with("+ ") {
-                after_lines.push(format!(
-                    r#"<span class="line add">    <span class="attribute">{}</span> = {}</span>"#,
-                    html_escape(key),
-                    format_value(&json!(&val_str[2..]), true)
-                ));
-                continue;
-            }
-            // Check for removal prefix
-            else if val_str.starts_with("- ") {
-                before_lines.push(format!(r#"<span class="line remove">    <span class="attribute">{}</span> = {}</span>"#,
-                    html_escape(key), format_value(&json!(&val_str[2..]), true)));
-                continue;
-            }
-        }
+        })
+        .collect();
+    render_fallback_rows(&changes, mode)
+}
 
-        // Default: show on both sides as unchanged
-        let line = format!(
-            r#"<span class="line unchanged">    <span class="attribute">{}</span> = {}</span>"#,
+struct FallbackRow<'a> {
+    path: &'a str,
+    before: Option<String>,
+    after: Option<String>,
+}
+
+fn raw_fallback_value(value: &str) -> String {
+    format!("<span>{}</span>", html_escape(value))
+}
+
+fn render_fallback_rows(rows: &[FallbackRow<'_>], mode: &PlanMode) -> String {
+    let (before_label, after_label) = column_labels(mode);
+    let mut html = format!(
+        "<div class=\"diff-container\"><table><thead><tr><th scope=\"col\">Attribute</th><th scope=\"col\">{}</th><th scope=\"col\">{}</th></tr></thead><tbody>",
+        html_escape(before_label),
+        html_escape(after_label)
+    );
+    for row in rows {
+        let class = match (row.before.is_some(), row.after.is_some()) {
+            (true, true) => "row-change",
+            (true, false) => "row-remove",
+            (false, true) => "row-add",
+            (false, false) => "row-unchanged",
+        };
+        html.push_str(&format!(
+            "<tr class=\"{class}\"><td class=\"path\">{}</td>{}{}</tr>",
+            html_escape(row.path),
+            value_cell("before", before_label, row.before.as_deref()),
+            value_cell("after", after_label, row.after.as_deref())
+        ));
+    }
+    html.push_str("</tbody></table></div>");
+    html
+}
+
+fn render_attributes(
+    attributes: &std::collections::HashMap<String, Value>,
+    side: ChangeSide,
+) -> String {
+    let mut attributes: Vec<_> = attributes.iter().collect();
+    attributes.sort_by(|left, right| left.0.cmp(right.0));
+    let mut html = String::from("<ul class=\"single-column\">");
+    if attributes.is_empty() {
+        html.push_str(&format!(
+            "<li><span class=\"muted\">{}</span><span class=\"empty\">No attributes</span></li>",
+            match side {
+                ChangeSide::Before => "Before",
+                ChangeSide::After => "After",
+            }
+        ));
+    }
+    for (key, value) in attributes {
+        html.push_str(&format!(
+            "<li><span class=\"attribute\">{}</span><span class=\"attribute-value\">{}</span></li>",
             html_escape(key),
             format_value(value, true)
-        );
-        before_lines.push(line.clone());
-        after_lines.push(line);
+        ));
     }
-
-    html.push_str(&format!(
-        r#"
-            <div class="diff-container">
-                <div class="diff-side">
-                    <div class="diff-header">{}</div>
-                    <div class="diff-content">"#,
-        html_escape(if *mode == crate::PlanMode::StateDiff {
-            "Older Snapshot"
-        } else {
-            "Current State"
-        })
-    ));
-
-    if before_lines.is_empty() {
-        html.push_str(r#"<span class="line unchanged">    # (no previous state)</span>"#);
-    } else {
-        for line in before_lines {
-            html.push_str(&line);
-            html.push('\n');
-        }
-    }
-
-    html.push_str(&format!(
-        r#"</div>
-                </div>
-                <div class="diff-side">
-                    <div class="diff-header">{}</div>
-                    <div class="diff-content">"#,
-        html_escape(if *mode == crate::PlanMode::StateDiff {
-            "Later Snapshot"
-        } else {
-            "After Apply"
-        })
-    ));
-
-    for line in after_lines {
-        html.push_str(&line);
-        html.push('\n');
-    }
-
-    html.push_str(
-        r#"</div>
-                </div>
-            </div>"#,
-    );
-
+    html.push_str("</ul>");
     html
-}
-
-fn format_single_column(resource: &crate::Resource) -> String {
-    let mut html = String::new();
-
-    html.push_str(
-        r#"
-            <div class="diff-container">
-                <div class="diff-side single">
-                    <div class="diff-content">"#,
-    );
-
-    // Show changes if available
-    if !resource.changes.is_empty() {
-        for change in &resource.changes {
-            let path = change.path.join(".");
-
-            match (&change.before, &change.after) {
-                (None, Some(after)) => {
-                    html.push_str(&format!(
-                        r#"<span class="line add"><span class="attribute">{}</span> = {}</span>
-"#,
-                        html_escape(&path),
-                        format_value(after, true)
-                    ));
-                }
-                (Some(before), None) => {
-                    html.push_str(&format!(
-                        r#"<span class="line remove"><span class="attribute">{}</span> = {}</span>
-"#,
-                        html_escape(&path),
-                        format_value(before, true)
-                    ));
-                }
-                _ => {
-                    if change.computed {
-                        html.push_str(&format!(r#"<span class="line add"><span class="attribute">{}</span> = <span class="value">(known after apply)</span></span>
-"#, html_escape(&path)));
-                    }
-                }
-            }
-        }
-    } else {
-        // Show attributes
-        for (key, value) in &resource.attributes {
-            let line_type = match resource.action {
-                ActionType::Create => LineType::Add,
-                ActionType::Destroy => LineType::Remove,
-                _ => LineType::Unchanged,
-            };
-            html.push_str(&format_attribute_line(key, value, line_type));
-        }
-    }
-
-    html.push_str(
-        r#"</div>
-                </div>
-            </div>"#,
-    );
-
-    html
-}
-
-fn format_attribute_line(key: &str, value: &Value, line_type: LineType) -> String {
-    let class = match line_type {
-        LineType::Add => "add",
-        LineType::Remove => "remove",
-        LineType::Unchanged => "unchanged",
-    };
-
-    format!(
-        r#"<span class="line {}"><span class="attribute">{}</span> = {}</span>
-"#,
-        class,
-        html_escape(key),
-        format_value(value, true)
-    )
 }
 
 fn format_value(value: &Value, with_quotes: bool) -> String {
     match value {
-        Value::String(s) => {
-            if s == "(known after apply)" {
-                "<span class=\"value\">(known after apply)</span>".to_string()
-            } else if with_quotes {
-                format!(r#"<span class="string-value">"{}"</span>"#, html_escape(s))
+        Value::String(value) => {
+            let escaped = html_escape(value);
+            if with_quotes {
+                format!("&quot;{escaped}&quot;")
             } else {
-                format!(r#"<span class="string-value">{}</span>"#, html_escape(s))
+                escaped
             }
         }
-        Value::Number(n) => format!(r#"<span class="value">{}</span>"#, n),
-        Value::Bool(b) => format!(r#"<span class="value">{}</span>"#, b),
-        Value::Null => "<span class=\"value\">null</span>".to_string(),
-        Value::Array(arr) => {
-            if arr.is_empty() {
-                "<span class=\"value\">[]</span>".to_string()
+        Value::Number(number) => number.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Array(values) => {
+            if values.is_empty() {
+                "[]".to_string()
             } else {
-                let items: Vec<String> = arr.iter().map(|v| format_value(v, true)).collect();
                 format!(
-                    r#"[
-{}
-]"#,
-                    items.join(",\n    ")
+                    "[{}]",
+                    values
+                        .iter()
+                        .map(|value| format_value(value, true))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             }
         }
-        Value::Object(obj) => {
-            if obj.is_empty() {
-                "<span class=\"value\">{{}}</span>".to_string()
+        Value::Object(values) => {
+            if values.is_empty() {
+                "{}".to_string()
             } else {
-                let mut items = Vec::new();
-                for (k, v) in obj {
-                    items.push(format!(
-                        r#"    <span class="attribute">{}</span> = {}"#,
-                        html_escape(k),
-                        format_value(v, true)
-                    ));
-                }
+                let mut entries: Vec<_> = values.iter().collect();
+                entries.sort_by(|left, right| left.0.cmp(right.0));
                 format!(
-                    r#"{{
-{}
-}}"#,
-                    items.join("\n")
+                    "{{ {} }}",
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| format!(
+                            "{} = {}",
+                            html_escape(key),
+                            format_value(value, true)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             }
         }
     }
 }
 
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
+pub(crate) fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
