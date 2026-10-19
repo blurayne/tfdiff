@@ -238,7 +238,7 @@ impl Cache {
         Some(
             self.root
                 .join(namespace)
-                .join(format!("{}.json", sha256_hex(key))),
+                .join(format!("{}.json.gz", sha256_hex(key))),
         )
     }
 }

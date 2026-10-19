@@ -158,6 +158,18 @@ struct Cli {
     #[arg(long, global = true)]
     only_state_migrations: bool,
 
+    /// Show the branch history of S3 state files (moves, splits, merges) and mark OBSOLETE ones (read-only)
+    #[arg(
+        long,
+        global = true,
+        conflicts_with_all = ["compact", "only_state_migrations", "show_atomic_sources", "generate_tfplan_file", "show_authors", "show_atomic_authors"]
+    )]
+    show_tfstate_duplicates: bool,
+
+    /// With --show-tfstate-duplicates, print the full resource hash instead of its first 16 characters
+    #[arg(long, global = true, requires = "show_tfstate_duplicates")]
+    full_hash: bool,
+
     /// Default IANA timezone for date/time filters
     #[arg(long, value_name = "ZONE", global = true)]
     timezone: Option<String>,
@@ -733,7 +745,17 @@ fn author_flag_requested(args: &[std::ffi::OsString]) -> bool {
     false
 }
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    match run_main() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_main() -> Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
     if author_flag_requested(&args) {
         eprintln!("{}", tfdiff::authors::RETENTION_NOTICE);
@@ -805,6 +827,9 @@ async fn run(cli: Cli) -> Result<()> {
         "--only-state-migrations requires an S3 prefix or glob input without --compact";
     if cli.only_state_migrations && (cli.compact || paths.len() != 1) {
         return Err(argument_error(MIGRATIONS_SHAPE));
+    }
+    if cli.show_tfstate_duplicates {
+        return run_tfstate_duplicates(&cli, &paths, &cache_policy, &s3_config).await;
     }
     if cli.generate_tfplan_file.is_some() && !state_diff {
         return Err(argument_error(
@@ -1660,6 +1685,66 @@ fn render_state_migrations(cli: &Cli, report: &tfdiff::inventory::BatchReport) -
             "S3 inventory completed with {} error(s); partial results were rendered",
             report.counts.errors
         )));
+    }
+    Ok(())
+}
+
+async fn run_tfstate_duplicates(
+    cli: &Cli,
+    paths: &[PathBuf],
+    cache_policy: &tfdiff::input::S3CachePolicy,
+    s3_config: &tfdiff::input::S3ClientConfig,
+) -> Result<()> {
+    use tfdiff::input::InputSource;
+    const SHAPE: &str = "--show-tfstate-duplicates requires exactly one S3 prefix or glob input";
+    if paths.len() != 1 {
+        return Err(argument_error(SHAPE));
+    }
+    let mode = cli.pattern_mode_for(&paths[0].to_string_lossy());
+    let InputSource::S3Inventory(source) = InputSource::parse_with_mode(&paths[0], mode)? else {
+        return Err(argument_error(SHAPE));
+    };
+    if !matches!(cli.format, OutputFormat::Terminal | OutputFormat::Json) {
+        return Err(argument_error(
+            "--show-tfstate-duplicates supports --format terminal or json",
+        ));
+    }
+    let report = tfdiff::tfstate_duplicates::build_duplicate_report(
+        &source,
+        cache_policy,
+        s3_config,
+        cli.unbuffer,
+        resolve_color(cli.color, io::stderr().is_terminal()),
+    )
+    .await?;
+    let output = match cli.format {
+        OutputFormat::Json => tfdiff::tfstate_branches::format_json(&report),
+        _ => tfdiff::tfstate_branches::format_terminal(
+            &report,
+            cli.verbose,
+            cli.show_datetime,
+            cli.full_hash,
+            chrono::Utc::now(),
+        ),
+    };
+    write_output(
+        &output,
+        cli.pager,
+        cli.browser,
+        cli.unbuffer,
+        io::stdout().is_terminal(),
+    )?;
+    if !report.errors.is_empty() {
+        for error in &report.errors {
+            eprintln!("Error: {error}");
+        }
+        return Err(TfdiffError::InputError {
+            input: paths[0].to_string_lossy().into_owned(),
+            message: format!(
+                "S3 listing completed with {} error(s); partial results were rendered",
+                report.errors.len()
+            ),
+        });
     }
     Ok(())
 }

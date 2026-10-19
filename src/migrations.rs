@@ -52,10 +52,13 @@ struct Candidate<'a> {
     identity: (&'static str, String),
 }
 
-/// The attribute identity used for matching; placeholders and unknown values never match.
-fn attribute_identity(resource: &Resource) -> Option<(&'static str, String)> {
+/// The identity of a resource given a lookup of its attributes; placeholders and unknown
+/// values never count. Shared with the S3 state history analysis.
+pub(crate) fn identity_value<'a>(
+    attribute: impl Fn(&str) -> Option<&'a Value>,
+) -> Option<(&'static str, String)> {
     IDENTITY_KEYS.into_iter().find_map(|key| {
-        let value = match resource.attributes.get(key)? {
+        let value = match attribute(key)? {
             Value::String(text) => text.clone(),
             Value::Number(number) => number.to_string(),
             _ => return None,
@@ -65,6 +68,11 @@ fn attribute_identity(resource: &Resource) -> Option<(&'static str, String)> {
             && value != "(known after apply)";
         usable.then_some((key, value))
     })
+}
+
+/// The attribute identity used for matching; placeholders and unknown values never match.
+fn attribute_identity(resource: &Resource) -> Option<(&'static str, String)> {
+    identity_value(|key| resource.attributes.get(key))
 }
 
 fn bucket_of(source: &str) -> &str {

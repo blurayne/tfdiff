@@ -823,6 +823,10 @@ async fn list_s3_inventory_uncached(
         let page = match request.send().await {
             Ok(page) => page,
             Err(error) => {
+                // Without credentials nothing can be listed; that is no partial result.
+                if let Some(message) = sdk_credentials_failure(&error) {
+                    return Err(input_error(&uri, &message));
+                }
                 let message = format!("ListObjectVersions failed: {}", safe_sdk_error(&error));
                 return Ok(S3InventoryScan {
                     objects: into_inventory_objects(keys),
@@ -2066,7 +2070,7 @@ fn get_object_error<E>(
     error: &aws_smithy_runtime_api::client::result::SdkError<E, SmithyResponse>,
 ) -> TfdiffError
 where
-    E: aws_smithy_types::error::metadata::ProvideErrorMetadata,
+    E: aws_smithy_types::error::metadata::ProvideErrorMetadata + std::error::Error + 'static,
 {
     let delete_marker = error
         .raw_response()
@@ -2079,12 +2083,89 @@ where
     input_error(&format!("s3://{}/{}", object.bucket, object.key), &message)
 }
 
+/// An AWS error text as one terminal-safe line of at most 300 characters.
+fn aws_text(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = crate::formatter::terminal::sanitize_terminal(&line);
+    if line.chars().count() > 300 {
+        format!("{}…", line.chars().take(300).collect::<String>())
+    } else {
+        line
+    }
+}
+
+/// Why AWS credentials could not be loaded, if that is what made a request fail, followed by
+/// the innermost error AWS reported (for example the SSO token error).
+fn credentials_failure(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    use aws_credential_types::provider::error::CredentialsError;
+
+    let mut current = Some(error);
+    let mut credentials = None;
+    let mut text = String::new();
+    let mut cause = String::new();
+    while let Some(error) = current {
+        cause = error.to_string();
+        if let Some(error) = error.downcast_ref::<CredentialsError>() {
+            credentials.get_or_insert(error);
+        }
+        text.push_str(&error.to_string().to_lowercase());
+        text.push('\n');
+        current = error.source();
+    }
+    let credentials = credentials?;
+    let profile = std::env::var("AWS_PROFILE")
+        .ok()
+        .filter(|profile| !profile.is_empty())
+        .map(|profile| format!(" --profile {profile}"))
+        .unwrap_or_default();
+    let sso = text.contains("sso") || text.contains("token has expired");
+    let hint = match credentials {
+        _ if sso => format!(
+            "AWS SSO login has expired or is missing; run `aws sso login{profile}` and try again"
+        ),
+        CredentialsError::CredentialsNotLoaded(_) => {
+            "no AWS credentials found; set AWS_PROFILE or configure credentials".to_string()
+        }
+        CredentialsError::ProviderTimedOut(_) => {
+            "loading AWS credentials timed out".to_string()
+        }
+        CredentialsError::InvalidConfiguration(_) => format!(
+            "the AWS credentials configuration is invalid; check the profile{profile} in ~/.aws/config"
+        ),
+        _ => format!(
+            "AWS credentials could not be loaded; check that you are logged in (for example `aws sso login{profile}`)"
+        ),
+    };
+    let cause = aws_text(&cause);
+    Some(if cause.is_empty() {
+        hint
+    } else {
+        format!("{hint} (AWS: {cause})")
+    })
+}
+
+/// The credentials failure behind an SDK error; such errors are fatal, not partial results.
+fn sdk_credentials_failure<E, R>(
+    error: &aws_smithy_runtime_api::client::result::SdkError<E, R>,
+) -> Option<String>
+where
+    E: std::error::Error + 'static,
+    R: std::fmt::Debug + 'static,
+{
+    credentials_failure(error)
+}
+
 fn safe_sdk_error<E, R>(error: &aws_smithy_runtime_api::client::result::SdkError<E, R>) -> String
 where
-    E: aws_smithy_types::error::metadata::ProvideErrorMetadata,
+    E: aws_smithy_types::error::metadata::ProvideErrorMetadata + std::error::Error + 'static,
+    R: std::fmt::Debug + 'static,
 {
     use aws_smithy_types::error::metadata::ProvideErrorMetadata;
 
+    if let Some(message) = sdk_credentials_failure(error) {
+        return message;
+    }
+    // Service messages are not echoed: they can carry parts of the requested object.
     if let Some(code) = error.code() {
         return format!("service error ({code})");
     }
@@ -2111,6 +2192,30 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expired_sso_token_names_the_login_and_keeps_the_aws_message() {
+        let error = aws_credential_types::provider::error::CredentialsError::provider_error(
+            "Error when retrieving token from sso: Token has expired and refresh failed",
+        );
+        let message = credentials_failure(&error).expect("a credentials failure");
+        assert!(
+            message.starts_with("AWS SSO login has expired or is missing; run `aws sso login"),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(
+                "(AWS: Error when retrieving token from sso: Token has expired and refresh failed)"
+            ),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn other_errors_are_no_credentials_failure() {
+        let error = std::io::Error::other("connection reset");
+        assert!(credentials_failure(&error).is_none());
+    }
 
     #[test]
     fn versioning_status_result_accepts_enabled() {

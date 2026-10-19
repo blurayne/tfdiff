@@ -376,7 +376,7 @@ pub fn format_terminal_output_with_s3_provenance_moves(
     output
 }
 
-fn format_state_age(timestamp: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn format_state_age(timestamp: &str, now: chrono::DateTime<chrono::Utc>) -> String {
     let sanitized = sanitize_terminal(timestamp);
     let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&sanitized) else {
         return sanitized;

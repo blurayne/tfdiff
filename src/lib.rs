@@ -11,6 +11,8 @@ pub mod parser;
 pub mod pattern;
 pub mod progress;
 pub mod secrets;
+pub mod tfstate_branches;
+pub mod tfstate_duplicates;
 pub mod ui;
 
 /// Serializes tests that touch the process-global `colored` override.
