@@ -131,12 +131,12 @@ test-watch: ## Run tests in watch mode
 test-coverage: ## Generate test coverage report
 	@echo "$(GREEN)Generating test coverage report...$(NC)"
 	@if command -v cargo-tarpaulin >/dev/null 2>&1; then \
-		$(CARGO) tarpaulin --out Html --output-dir target/coverage --all-features; \
+		$(CARGO) tarpaulin --out Xml --out Html --output-dir target/coverage --all-features; \
 		echo "$(GREEN)Coverage report generated: target/coverage/tarpaulin-report.html$(NC)"; \
 	else \
 		echo "$(RED)cargo-tarpaulin not installed. Installing...$(NC)"; \
 		$(CARGO) install cargo-tarpaulin; \
-		$(CARGO) tarpaulin --out Html --output-dir target/coverage --all-features; \
+		$(CARGO) tarpaulin --out Xml --out Html --output-dir target/coverage --all-features; \
 	fi
 
 ##@ Code Quality
@@ -295,7 +295,7 @@ docker-build: ## Build Docker image
 .PHONY: docker-run
 docker-run: docker-build ## Run Docker container
 	@echo "$(GREEN)Running Docker container...$(NC)"
-	docker run --rm -it $(PROJECT_NAME):$(VERSION) --help
+	docker run --rm $(PROJECT_NAME):$(VERSION) --help
 
 .PHONY: docker-shell
 docker-shell: docker-build ## Run Docker container with shell

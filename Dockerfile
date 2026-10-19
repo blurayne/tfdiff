@@ -53,5 +53,5 @@ LABEL \
     org.opencontainers.image.title="tfdiff" \
     org.opencontainers.image.description="Beautiful Terraform plan and apply output formatter" \
     org.opencontainers.image.vendor="tfdiff" \
-    org.opencontainers.image.source="https://github.com/yourusername/tfdiff" \
-    org.opencontainers.image.documentation="https://github.com/yourusername/tfdiff/README.md"
+    org.opencontainers.image.source="https://github.com/blurayne/tfdiff" \
+    org.opencontainers.image.documentation="https://github.com/blurayne/tfdiff/blob/main/README.md"
